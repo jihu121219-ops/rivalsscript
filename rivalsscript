@@ -1,0 +1,768 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+while not Players.LocalPlayer do
+    task.wait()
+end
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local env = getgenv and getgenv() or _G
+
+local dataModule = ReplicatedStorage:WaitForChild("Data")
+local flow = require(ReplicatedStorage:WaitForChild("FlowClient"))
+local data = require(dataModule)
+local packages = require(ReplicatedStorage:WaitForChild("Packages"))
+local luck = packages.Utility.Luck
+local lootData = flow.Loot and require(dataModule:WaitForChild("Loot"):WaitForChild("Data")) or {}
+local lootFolder = flow.Loot and workspace:WaitForChild("Loot") or workspace:FindFirstChild("Loot")
+
+if flow.Loot then
+    assert(type(flow.Loot.LootEquip) == "function", "LootEquip을 사용할 수 없습니다.")
+end
+
+local repo = "https://raw.githubusercontent.com/Ali-lov3/Obsidian-UiLibs/refs/heads/main/"
+local source = game:HttpGet(repo .. "Library.lua")
+local target = "            table.clear(Buttons)\n            if Info.Multi then"
+local replacement = [[            table.clear(Buttons)
+            for _, child in MenuTable.Menu:GetChildren() do
+                if not child:IsA("UIListLayout") then
+                    child:Destroy()
+                end
+            end
+            if Info.Multi then]]
+local first, last = source:find(target, 1, true)
+
+assert(first, "Obsidian 드롭다운 업데이트를 사용할 수 없습니다.")
+source = source:sub(1, first - 1) .. replacement .. source:sub(last + 1)
+
+local library = loadstring(source)()
+local options = library.Options
+local toggles = library.Toggles
+
+env.AutoLoot = library
+
+local hiddenInventoryCategories = {
+    BigElectronic = true,
+    Cash = true,
+    Painting = true,
+    VehiclePart = true,
+}
+local dropCategories = {}
+local dropCategoryByName = {}
+local lootValueByName = {}
+local dropCategorySet = {}
+local maxLootValue = 0
+
+for _, entry in lootData do
+    if entry.Item and entry.Category then
+        dropCategoryByName[entry.Item] = entry.Category
+        lootValueByName[entry.Item] = entry.Value
+        maxLootValue = math.max(maxLootValue, tonumber(entry.Value) or 0)
+
+        if not hiddenInventoryCategories[entry.Category] and not dropCategorySet[entry.Category] then
+            dropCategorySet[entry.Category] = true
+            dropCategories[#dropCategories + 1] = entry.Category
+        end
+    end
+end
+
+table.sort(dropCategories)
+
+local function isLoot(item)
+    if item.Parent ~= lootFolder or not item:IsA("Model") then
+        return false
+    end
+
+    local part = item.PrimaryPart
+
+    return part
+        and part:IsA("BasePart")
+        and part.Parent == item
+        and CollectionService:HasTag(item, "Draggable")
+        and CollectionService:HasTag(item, "Equippable")
+        and not CollectionService:HasTag(item, "BuyableLoot")
+end
+
+-- =========================================
+-- 사일런트 에임 (Silent Aim) 관련 함수
+-- =========================================
+local drawingLibrary = Drawing
+local drawingAvailable = type(drawingLibrary) == "table" and type(drawingLibrary.new) == "function"
+local silentAimCircle
+local silentAimTargets = {}
+local silentAimLastScan = 0
+local silentAimRandom = Random.new()
+local originalWeaponRaycast = flow.BulletsClient and flow.BulletsClient.raycast
+
+local function refreshSilentAimTargets()
+    if os.clock() - silentAimLastScan < 0.35 then
+        return
+    end
+
+    silentAimLastScan = os.clock()
+    table.clear(silentAimTargets)
+
+    for _, npc in CollectionService:GetTagged("NPC") do
+        if npc:IsA("Model") and npc:IsDescendantOf(workspace) then
+            silentAimTargets[#silentAimTargets + 1] = {
+                Model = npc,
+            }
+        end
+    end
+end
+
+local function projectAimPart(part, cam, center)
+    if not part or not part:IsA("BasePart") or not part:IsDescendantOf(workspace) then
+        return
+    end
+
+    local point, onScreen = cam:WorldToViewportPoint(part.Position)
+
+    if not onScreen or point.Z <= 0 then
+        return
+    end
+
+    local screenPoint = Vector2.new(point.X, point.Y)
+    return (screenPoint - center).Magnitude
+end
+
+local function getAimPart(model, cam, center)
+    local selection = options.RunawaysSilentAimTargetPart and options.RunawaysSilentAimTargetPart.Value or "가장 가까운 부위"
+
+    if selection ~= "가장 가까운 부위" then
+        local part = model:FindFirstChild(selection) or model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+        return part, projectAimPart(part, cam, center)
+    end
+
+    local bestPart
+    local bestDistance
+
+    for _, part in model:GetChildren() do
+        if part:IsA("BasePart") then
+            local distance = projectAimPart(part, cam, center)
+
+            if distance and (not bestDistance or distance < bestDistance) then
+                bestPart = part
+                bestDistance = distance
+            end
+        end
+    end
+
+    return bestPart, bestDistance
+end
+
+local function getShotOriginAndRange(arguments, cam)
+    local origin = typeof(arguments.from) == "Vector3" and arguments.from or cam.CFrame.Position
+
+    if typeof(arguments.to) == "Vector3" then
+        return origin, (arguments.to - origin).Magnitude
+    end
+
+    if typeof(arguments.direction) == "Vector3" then
+        return origin, type(arguments.length) == "number" and arguments.length or arguments.direction.Magnitude
+    end
+
+    if type(arguments.rayLength) == "number" then
+        return cam.CFrame.Position, arguments.rayLength
+    end
+end
+
+local function isAimTargetVisible(model, part, origin, config)
+    if not toggles.RunawaysSilentAimVisibleCheck or not toggles.RunawaysSilentAimVisibleCheck.Value then
+        return true
+    end
+
+    if type(originalWeaponRaycast) ~= "function" then
+        return false
+    end
+
+    local success, result = pcall(originalWeaponRaycast, {
+        from = origin,
+        to = part.Position,
+        config = config,
+    }, player)
+
+    return success
+        and type(result) == "table"
+        and result.success
+        and result.hit
+        and result.hit:IsDescendantOf(model)
+end
+
+local function getSilentAimTarget(arguments)
+    if not toggles.RunawaysSilentAimEnabled or not toggles.RunawaysSilentAimEnabled.Value then
+        return
+    end
+
+    if options.RunawaysSilentAimHitChance and silentAimRandom:NextNumber(0, 100) > options.RunawaysSilentAimHitChance.Value then
+        return
+    end
+
+    local cam = workspace.CurrentCamera
+
+    if not cam then
+        return
+    end
+
+    local origin, range = getShotOriginAndRange(arguments, cam)
+
+    if not origin or not range or range <= 0 then
+        return
+    end
+
+    refreshSilentAimTargets()
+
+    local center = cam.ViewportSize * 0.5
+    local radius = options.RunawaysSilentAimFOVRadius and options.RunawaysSilentAimFOVRadius.Value or 100
+    local bestPart
+    local bestDistance
+
+    for _, target in silentAimTargets do
+        local model = target.Model
+        local humanoid = model and model:FindFirstChildOfClass("Humanoid")
+
+        if model and model:IsDescendantOf(workspace) and humanoid and humanoid.Health > 0 then
+            local part, distance = getAimPart(model, cam, center)
+
+            if part
+                and distance
+                and distance <= radius
+                and (part.Position - origin).Magnitude <= range
+                and (not bestDistance or distance < bestDistance)
+                and isAimTargetVisible(model, part, origin, arguments.config)
+            then
+                bestPart = part
+                bestDistance = distance
+            end
+        end
+    end
+
+    return bestPart
+end
+
+local function weaponRaycast(arguments, shooter)
+    if type(arguments) == "table"
+        and type(arguments.config) == "table"
+        and type(arguments.config.damage) == "number"
+    then
+        local target = getSilentAimTarget(arguments)
+
+        if target then
+            local cam = workspace.CurrentCamera
+            local origin
+            local range
+
+            if cam then
+                origin, range = getShotOriginAndRange(arguments, cam)
+            end
+
+            if origin and range and range > 0 then
+                local direction = target.Position - origin
+
+                if direction.Magnitude > 0 then
+                    local redirected = table.clone(arguments)
+
+                    if typeof(arguments.to) == "Vector3" then
+                        redirected.to = target.Position
+                    else
+                        redirected.from = origin
+                        redirected.direction = direction.Unit * range
+                        redirected.rayLength = nil
+                    end
+
+                    arguments = redirected
+                end
+            end
+        end
+    end
+
+    return originalWeaponRaycast(arguments, shooter)
+end
+
+if flow.BulletsClient and type(originalWeaponRaycast) == "function" then
+    flow.BulletsClient.raycast = weaponRaycast
+end
+
+-- =========================================
+-- ESP 및 에임봇 / 보이드 스팸 설정
+-- =========================================
+local cache = {}
+
+local bones = {
+    {"Head", "UpperTorso"},
+    {"UpperTorso", "RightUpperArm"},
+    {"RightUpperArm", "RightLowerArm"},
+    {"RightLowerArm", "RightHand"},
+    {"UpperTorso", "LeftUpperArm"},
+    {"LeftUpperArm", "LeftLowerArm"},
+    {"LeftLowerArm", "LeftHand"},
+    {"UpperTorso", "LowerTorso"},
+    {"LowerTorso", "LeftUpperLeg"},
+    {"LeftUpperLeg", "LeftLowerLeg"},
+    {"LeftLowerLeg", "LeftFoot"},
+    {"LowerTorso", "RightUpperLeg"},
+    {"RightUpperLeg", "RightLowerLeg"},
+    {"RightLowerLeg", "RightFoot"}
+}
+
+local ESP_SETTINGS = {
+    BoxOutlineColor = Color3.new(0, 0, 0),
+    BoxColor = Color3.new(1, 1, 1),
+    NameColor = Color3.new(1, 1, 1),
+    HealthOutlineColor = Color3.new(0, 0, 0),
+    HealthHighColor = Color3.new(0, 1, 0),
+    HealthLowColor = Color3.new(1, 0, 0),
+    CharSize = Vector2.new(4, 6),
+    Teamcheck = false,
+    WallCheck = false,
+    Enabled = false,
+    ShowBox = false,
+    BoxType = "2D",
+    ShowName = false,
+    ShowHealth = false,
+    ShowDistance = false,
+    ShowSkeletons = false,
+    ShowTracer = false,
+    TracerColor = Color3.new(1, 1, 1),
+    TracerThickness = 2,
+    SkeletonsColor = Color3.new(1, 1, 1),
+    TracerPosition = "아래쪽",
+    -- 보이드 스팸 ON/OFF 설정 변수
+    VoidSpamEnabled = false,
+    -- 우클릭 에임봇 설정 변수
+    AimbotEnabled = true,
+}
+
+-- =========================================
+-- 우클릭 에임봇 (마우스 우클릭 유지 시 적 머리 고정 + 팀체크)
+-- =========================================
+local isRightMouseDown = false
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        isRightMouseDown = true
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        isRightMouseDown = false
+    end
+end)
+
+local function getClosestEnemyHead()
+    local cam = workspace.CurrentCamera
+    local center = cam.ViewportSize * 0.5
+    local bestHead = nil
+    local shortestDistance = math.huge
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player then
+            -- 팀체크 적용 (Teamcheck 설정이 켜져있거나 팀이 다를 때)
+            local isTeamValid = not ESP_SETTINGS.Teamcheck or (p.Team ~= player.Team)
+            if isTeamValid then
+                local char = p.Character
+                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+                local head = char and char:FindFirstChild("Head")
+                
+                if char and humanoid and humanoid.Health > 0 and head then
+                    local pos, onScreen = cam:WorldToViewportPoint(head.Position)
+                    if onScreen and pos.Z > 0 then
+                        local screenDist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+                        if screenDist < shortestDistance then
+                            shortestDistance = screenDist
+                            bestHead = head
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestHead
+end
+
+-- =========================================
+-- 보이드 스팸 (머리 텔레포트 공격 + 시점 고정) 루프
+-- =========================================
+task.spawn(function()
+    local savedCameraCFrame = nil
+    
+    while true do
+        if ESP_SETTINGS.VoidSpamEnabled and ESP_SETTINGS.Enabled then
+            pcall(function()
+                local character = player.Character
+                local hrp = character and character:FindFirstChild("HumanoidRootPart")
+                
+                if hrp then
+                    if not savedCameraCFrame then
+                        savedCameraCFrame = camera.CFrame
+                    end
+                    
+                    camera.CFrame = savedCameraCFrame
+                    
+                    refreshSilentAimTargets()
+                    for _, target in ipairs(silentAimTargets) do
+                        local model = target.Model
+                        local head = model and model:FindFirstChild("Head")
+                        local humanoid = model and model:FindFirstChildOfClass("Humanoid")
+                        
+                        if head and humanoid and humanoid.Health > 0 then
+                            hrp.CFrame = head.CFrame * CFrame.new(0, 2, 0)
+                            task.wait(0.02)
+                            break
+                        end
+                    end
+                end
+            end)
+        else
+            if savedCameraCFrame then
+                savedCameraCFrame = nil
+            end
+            task.wait(0.1)
+        end
+        task.wait()
+    end
+end)
+
+local function create(class, properties)
+    local drawing = Drawing.new(class)
+    for property, value in pairs(properties) do
+        drawing[property] = value
+    end
+    return drawing
+end
+
+local function createEsp(p)
+    local esp = {
+        tracer = create("Line", {
+            Thickness = ESP_SETTINGS.TracerThickness,
+            Color = ESP_SETTINGS.TracerColor,
+            Transparency = 0.5
+        }),
+        boxOutline = create("Square", {
+            Color = ESP_SETTINGS.BoxOutlineColor,
+            Thickness = 3,
+            Filled = false
+        }),
+        box = create("Square", {
+            Color = ESP_SETTINGS.BoxColor,
+            Thickness = 1,
+            Filled = false
+        }),
+        name = create("Text", {
+            Color = ESP_SETTINGS.NameColor,
+            Outline = true,
+            Center = true,
+            Size = 13
+        }),
+        healthOutline = create("Line", {
+            Thickness = 3,
+            Color = ESP_SETTINGS.HealthOutlineColor
+        }),
+        health = create("Line", {
+            Thickness = 1
+        }),
+        distance = create("Text", {
+            Color = Color3.new(1, 1, 1),
+            Size = 12,
+            Outline = true,
+            Center = true
+        }),
+        boxLines = {},
+    }
+
+    cache[p] = esp
+    cache[p]["skeletonlines"] = {}
+end
+
+local function isPlayerBehindWall(p)
+    local character = p.Character
+    if not character then
+        return false
+    end
+
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        return false
+    end
+
+    local ray = Ray.new(camera.CFrame.Position, (rootPart.Position - camera.CFrame.Position).Unit * (rootPart.Position - camera.CFrame.Position).Magnitude)
+    local hit, position = workspace:FindPartOnRayWithIgnoreList(ray, {player.Character, character})
+    return hit and hit:IsA("Part")
+end
+
+local function removeEsp(p)
+    local esp = cache[p]
+    if not esp then return end
+
+    for _, drawing in pairs(esp) do
+        if typeof(drawing) == "table" and drawing.Remove then
+            drawing:Remove()
+        elseif typeof(drawing) == "userdata" then
+            drawing:Remove()
+        end
+    end
+
+    cache[p] = nil
+end
+
+local function updateEsp()
+    -- 우클릭 에임봇 작동 처리
+    if isRightMouseDown and ESP_SETTINGS.AimbotEnabled then
+        local targetHead = getClosestEnemyHead()
+        if targetHead then
+            camera.CFrame = CFrame.new(camera.CFrame.Position, targetHead.Position)
+        end
+    end
+
+    for p, esp in pairs(cache) do
+        local character, team = p.Character, p.Team
+        if character and (not ESP_SETTINGS.Teamcheck or (team and team ~= player.Team)) then
+            local rootPart = character:FindFirstChild("HumanoidRootPart")
+            local head = character:FindFirstChild("Head")
+            local humanoid = character:FindFirstChild("Humanoid")
+            local isBehindWall = ESP_SETTINGS.WallCheck and isPlayerBehindWall(p)
+            local shouldShow = not isBehindWall and ESP_SETTINGS.Enabled
+            if rootPart and head and humanoid and shouldShow then
+                local position, onScreen = camera:WorldToViewportPoint(rootPart.Position)
+                if onScreen then
+                    local hrp2D = camera:WorldToViewportPoint(rootPart.Position)
+                    local charSize = (camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 3, 0)).Y - camera:WorldToViewportPoint(rootPart.Position + Vector3.new(0, 2.6, 0)).Y) / 2
+                    local boxSize = Vector2.new(math.floor(charSize * 1.8), math.floor(charSize * 1.9))
+                    local boxPosition = Vector2.new(math.floor(hrp2D.X - charSize * 1.8 / 2), math.floor(hrp2D.Y - charSize * 1.6 / 2))
+
+                    if ESP_SETTINGS.ShowName and ESP_SETTINGS.Enabled then
+                        esp.name.Visible = true
+                        esp.name.Text = string.lower(p.Name)
+                        esp.name.Position = Vector2.new(boxSize.X / 2 + boxPosition.X, boxPosition.Y - 16)
+                        esp.name.Color = ESP_SETTINGS.NameColor
+                    else
+                        esp.name.Visible = false
+                    end
+
+                    if ESP_SETTINGS.ShowBox and ESP_SETTINGS.Enabled then
+                        if ESP_SETTINGS.BoxType == "2D" then
+                            esp.boxOutline.Size = boxSize
+                            esp.boxOutline.Position = boxPosition
+                            esp.box.Size = boxSize
+                            esp.box.Position = boxPosition
+                            esp.box.Color = ESP_SETTINGS.BoxColor
+                            esp.box.Visible = true
+                            esp.boxOutline.Visible = true
+                            for _, line in ipairs(esp.boxLines) do
+                                line:Remove()
+                            end
+                            esp.boxLines = {}
+                        elseif ESP_SETTINGS.BoxType == "코너 박스" then
+                            local lineW = (boxSize.X / 5)
+                            local lineH = (boxSize.Y / 6)
+                            local lineT = 1
+                            if #esp.boxLines == 0 then
+                                for i = 1, 16 do
+                                    local boxLine = create("Line", {
+                                        Thickness = 1,
+                                        Color = ESP_SETTINGS.BoxColor,
+                                        Transparency = 1
+                                    })
+                                    esp.boxLines[#esp.boxLines + 1] = boxLine
+                                end
+                            end
+                            local boxLines = esp.boxLines
+                            -- 상단 좌측
+                            boxLines[1].From = Vector2.new(boxPosition.X - lineT, boxPosition.Y - lineT)
+                            boxLines[1].To = Vector2.new(boxPosition.X + lineW, boxPosition.Y - lineT)
+                            boxLines[2].From = Vector2.new(boxPosition.X - lineT, boxPosition.Y - lineT)
+                            boxLines[2].To = Vector2.new(boxPosition.X - lineT, boxPosition.Y + lineH)
+                            -- 상단 우측
+                            boxLines[3].From = Vector2.new(boxPosition.X + boxSize.X - lineW, boxPosition.Y - lineT)
+                            boxLines[3].To = Vector2.new(boxPosition.X + boxSize.X + lineT, boxPosition.Y - lineT)
+                            boxLines[4].From = Vector2.new(boxPosition.X + boxSize.X + lineT, boxPosition.Y - lineT)
+                            boxLines[4].To = Vector2.new(boxPosition.X + boxSize.X + lineT, boxPosition.Y + lineH)
+                            -- 하단 좌측
+                            boxLines[5].From = Vector2.new(boxPosition.X - lineT, boxPosition.Y + boxSize.Y - lineH)
+                            boxLines[5].To = Vector2.new(boxPosition.X - lineT, boxPosition.Y + boxSize.Y + lineT)
+                            boxLines[6].From = Vector2.new(boxPosition.X - lineT, boxPosition.Y + boxSize.Y + lineT)
+                            boxLines[6].To = Vector2.new(boxPosition.X + lineW, boxPosition.Y + boxSize.Y + lineT)
+                            -- 하단 우측
+                            boxLines[7].From = Vector2.new(boxPosition.X + boxSize.X - lineW, boxPosition.Y + boxSize.Y + lineT)
+                            boxLines[7].To = Vector2.new(boxPosition.X + boxSize.X + lineT, boxPosition.Y + boxSize.Y + lineT)
+                            boxLines[8].From = Vector2.new(boxPosition.X + boxSize.X + lineT, boxPosition.Y + boxSize.Y - lineH)
+                            boxLines[8].To = Vector2.new(boxPosition.X + boxSize.X + lineT, boxPosition.Y + boxSize.Y + lineT)
+                            -- 내부 라인
+                            for i = 9, 16 do
+                                boxLines[i].Thickness = 2
+                                boxLines[i].Color = ESP_SETTINGS.BoxOutlineColor
+                                boxLines[i].Transparency = 1
+                            end
+                            boxLines[9].From = Vector2.new(boxPosition.X, boxPosition.Y)
+                            boxLines[9].To = Vector2.new(boxPosition.X, boxPosition.Y + lineH)
+                            boxLines[10].From = Vector2.new(boxPosition.X, boxPosition.Y)
+                            boxLines[10].To = Vector2.new(boxPosition.X + lineW, boxPosition.Y)
+                            boxLines[11].From = Vector2.new(boxPosition.X + boxSize.X - lineW, boxPosition.Y)
+                            boxLines[11].To = Vector2.new(boxPosition.X + boxSize.X, boxPosition.Y)
+                            boxLines[12].From = Vector2.new(boxPosition.X + boxSize.X, boxPosition.Y)
+                            boxLines[12].To = Vector2.new(boxPosition.X + boxSize.X, boxPosition.Y + lineH)
+                            boxLines[13].From = Vector2.new(boxPosition.X, boxPosition.Y + boxSize.Y - lineH)
+                            boxLines[13].To = Vector2.new(boxPosition.X, boxPosition.Y + boxSize.Y)
+                            boxLines[14].From = Vector2.new(boxPosition.X, boxPosition.Y + boxSize.Y)
+                            boxLines[14].To = Vector2.new(boxPosition.X + lineW, boxPosition.Y + boxSize.Y)
+                            boxLines[15].From = Vector2.new(boxPosition.X + boxSize.X - lineW, boxPosition.Y + boxSize.Y)
+                            boxLines[15].To = Vector2.new(boxPosition.X + boxSize.X, boxPosition.Y + boxSize.Y)
+                            boxLines[16].From = Vector2.new(boxPosition.X + boxSize.X, boxPosition.Y + boxSize.Y - lineH)
+                            boxLines[16].To = Vector2.new(boxPosition.X + boxSize.X, boxPosition.Y + boxSize.Y)
+                            for _, line in ipairs(boxLines) do
+                                line.Visible = true
+                            end
+                            esp.box.Visible = false
+                            esp.boxOutline.Visible = false
+                        end
+                    else
+                        esp.box.Visible = false
+                        esp.boxOutline.Visible = false
+                        for _, line in ipairs(esp.boxLines) do
+                            line:Remove()
+                        end
+                        esp.boxLines = {}
+                    end
+
+                    if ESP_SETTINGS.ShowHealth and ESP_SETTINGS.Enabled then
+                        esp.healthOutline.Visible = true
+                        esp.health.Visible = true
+                        local healthPercentage = humanoid.Health / humanoid.MaxHealth
+                        esp.healthOutline.From = Vector2.new(boxPosition.X - 6, boxPosition.Y + boxSize.Y)
+                        esp.healthOutline.To = Vector2.new(esp.healthOutline.From.X, esp.healthOutline.From.Y - boxSize.Y)
+                        esp.health.From = Vector2.new((boxPosition.X - 5), boxPosition.Y + boxSize.Y)
+                        esp.health.To = Vector2.new(esp.health.From.X, esp.health.From.Y - healthPercentage * boxSize.Y)
+                        esp.health.Color = ESP_SETTINGS.HealthLowColor:Lerp(ESP_SETTINGS.HealthHighColor, healthPercentage)
+                    else
+                        esp.healthOutline.Visible = false
+                        esp.health.Visible = false
+                    end
+
+                    if ESP_SETTINGS.ShowDistance and ESP_SETTINGS.Enabled then
+                        local distance = (camera.CFrame.p - rootPart.Position).Magnitude
+                        esp.distance.Text = string.format("%.1f 스터드", distance)
+                        esp.distance.Position = Vector2.new(boxPosition.X + boxSize.X / 2, boxPosition.Y + boxSize.Y + 5)
+                        esp.distance.Visible = true
+                    else
+                        esp.distance.Visible = false
+                    end
+
+                    if ESP_SETTINGS.ShowSkeletons and ESP_SETTINGS.Enabled then
+                        if #esp["skeletonlines"] == 0 then
+                            for _, bonePair in ipairs(bones) do
+                                local parentBone, childBone = bonePair[1], bonePair[2]
+                                if character and character:FindFirstChild(parentBone) and character:FindFirstChild(childBone) then
+                                    local skeletonLine = create("Line", {
+                                        Thickness = 1,
+                                        Color = ESP_SETTINGS.SkeletonsColor,
+                                        Transparency = 1
+                                    })
+                                    esp["skeletonlines"][#esp["skeletonlines"] + 1] = {skeletonLine, parentBone, childBone}
+                                end
+                            end
+                        end
+                        for _, lineData in ipairs(esp["skeletonlines"]) do
+                            local skeletonLine = lineData[1]
+                            local parentBone, childBone = lineData[2], lineData[3]
+                            if character and character:FindFirstChild(parentBone) and character:FindFirstChild(childBone) then
+                                local parentPosition = camera:WorldToViewportPoint(character[parentBone].Position)
+                                local childPosition = camera:WorldToViewportPoint(character[childBone].Position)
+                                skeletonLine.From = Vector2.new(parentPosition.X, parentPosition.Y)
+                                skeletonLine.To = Vector2.new(childPosition.X, childPosition.Y)
+                                skeletonLine.Color = ESP_SETTINGS.SkeletonsColor
+                                skeletonLine.Visible = true
+                            else
+                                skeletonLine:Remove()
+                            end
+                        end
+                    else
+                        for _, lineData in ipairs(esp["skeletonlines"]) do
+                            local skeletonLine = lineData[1]
+                            skeletonLine:Remove()
+                        end
+                        esp["skeletonlines"] = {}
+                    end
+
+                    if ESP_SETTINGS.ShowTracer and ESP_SETTINGS.Enabled then
+                        local tracerY
+                        if ESP_SETTINGS.TracerPosition == "위쪽" then
+                            tracerY = 0
+                        elseif ESP_SETTINGS.TracerPosition == "가운데" then
+                            tracerY = camera.ViewportSize.Y / 2
+                        else
+                            tracerY = camera.ViewportSize.Y
+                        end
+                        if ESP_SETTINGS.Teamcheck and p.TeamColor == player.TeamColor then
+                            esp.tracer.Visible = false
+                        else
+                            esp.tracer.Visible = true
+                            esp.tracer.From = Vector2.new(camera.ViewportSize.X / 2, tracerY)
+                            esp.tracer.To = Vector2.new(hrp2D.X, hrp2D.Y)
+                        end
+                    else
+                        esp.tracer.Visible = false
+                    end
+                else
+                    for _, drawing in pairs(esp) do
+                        if typeof(drawing) == "table" and drawing.Visible ~= nil then
+                            drawing.Visible = false
+                        end
+                    end
+                end
+            else
+                for _, drawing in pairs(esp) do
+                    if typeof(drawing) == "table" and drawing.Visible ~= nil then
+                        drawing.Visible = false
+                    end
+                end
+                for _, lineData in ipairs(esp["skeletonlines"]) do
+                    lineData[1].Visible = false
+                end
+                for _, line in ipairs(esp.boxLines) do
+                    line.Visible = false
+                end
+            end
+        else
+            for _, drawing in pairs(esp) do
+                if typeof(drawing) == "table" and drawing.Visible ~= nil then
+                    drawing.Visible = false
+                end
+            end
+            for _, lineData in ipairs(esp["skeletonlines"]) do
+                lineData[1].Visible = false
+            end
+            for _, line in ipairs(esp.boxLines) do
+                line.Visible = false
+            end
+        end
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= player then
+        createEsp(p)
+    end
+end
+
+Players.PlayerAdded:Connect(function(p)
+    if p ~= player then
+        createEsp(p)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(p)
+    removeEsp(p)
+end)
+
+RunService.RenderStepped:Connect(updateEsp)
+
+return ESP_SETTINGS
