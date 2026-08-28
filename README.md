@@ -1,0 +1,2 @@
+# rivalsscript
+rivalsscript
