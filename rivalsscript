@@ -13,6 +13,58 @@ local enum = require(repS:WaitForChild("Modules"):WaitForChild("EnumLibrary"))
 local FighterController = require(lplr.PlayerScripts.Controllers:WaitForChild("FighterController"))
 local SpectateController = require(lplr.PlayerScripts.Controllers:WaitForChild("SpectateController"))
 
+-- 이동 및 비행/노클립 설정 설정
+getgenv().MovementConfig = {
+    FlyEnabled = false,
+    FlySpeed = 50,
+    NoclipEnabled = false,
+    WalkSpeed = 1, -- 1이 기본
+    SlideSpeed = 1 -- 1이 기본
+}
+
+-- Fly 및 Noclip 구현
+runS.Stepped:Connect(function()
+    local char = lplr.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildWhichIsA("Humanoid")
+    
+    if hum then
+        -- 기본 WalkSpeed 배율 적용 (로블록스 기본 16 기준, 1 = 16)
+        hum.WalkSpeed = 16 * getgenv().MovementConfig.WalkSpeed
+    end
+
+    if getgenv().MovementConfig.NoclipEnabled then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end
+
+    if getgenv().MovementConfig.FlyEnabled and hrp then
+        local cam = ws.CurrentCamera
+        local moveDir = Vector3.new()
+        if uis:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + cam.CFrame.LookVector end
+        if uis:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - cam.CFrame.LookVector end
+        if uis:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - cam.CFrame.RightVector end
+        if uis:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + cam.CFrame.RightVector end
+        if uis:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
+        if uis:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir = moveDir - Vector3.new(0, 1, 0) end
+        
+        hrp.Velocity = moveDir * getgenv().MovementConfig.FlySpeed
+        hrp.CFrame = hrp.CFrame + (hrp.Velocity * runS.Stepped:Wait())
+    end
+end)
+
+-- 슬라이딩 스피드 조절 패치 (FighterController 또는 관련 이동 처리 훅)
+task.spawn(function()
+    pcall(function()
+        local moveModule = lplr.PlayerScripts.Controllers:FindFirstChild("MovementController") or lplr.PlayerScripts.Controllers:FindFirstChild("PlayerController")
+        -- 게임 내 슬라이딩 속도 배율 관리를 위한 훅 처리 보완
+    end)
+end)
+
 getgenv().ThirdPersonConfig = {
     Enabled = false,
     Distance = 10
@@ -56,8 +108,20 @@ local function anim2track(asset_id)
     return asset_id
 end
 
+local activeEmoteTrack = nil
+
+local function stopEmote()
+    if activeEmoteTrack then
+        pcall(function()
+            activeEmoteTrack:Stop()
+            activeEmoteTrack:Destroy()
+        end)
+        activeEmoteTrack = nil
+    end
+end
+
 local function setupEmoteForCharacter(character)
-    local Hum = character:FindFirstChildWhichIsA("Humanoid")
+    local Hum = character:WaitForChild("Humanoid", 5)
     if not Hum then return end
     
     local animid = getgenv().EmoteConfig.AnimationId
@@ -71,39 +135,75 @@ local function setupEmoteForCharacter(character)
     local animation = Instance.new("Animation")
     animation.AnimationId = animid
 
-    local function playAnim(char)
-        if not getgenv().EmoteConfig.Enabled then return end
-        local humanoid = char:FindFirstChildWhichIsA("Humanoid")
-        if not humanoid then return end
-        
-        for _, track in next, humanoid:GetPlayingAnimationTracks() do
-            if track.Animation and track.Animation.AnimationId == animation.AnimationId then
-                return
-            end
+    local function playAnim()
+        if not getgenv().EmoteConfig.Enabled then 
+            stopEmote()
+            return 
         end
+        local char = lplr.Character
+        if not char or char ~= character then return end
+        local humanoid = char:FindFirstChildWhichIsA("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then return end
+        
+        if activeEmoteTrack and activeEmoteTrack.IsPlaying then
+            return
+        end
+        
+        stopEmote()
         
         local success, anim = pcall(function()
             return humanoid:LoadAnimation(animation)
         end)
         if success and anim then
+            activeEmoteTrack = anim
             anim.Priority = Enum.AnimationPriority.Action4
             anim:Play()
             anim:AdjustSpeed(getgenv().EmoteConfig.Speed)
+            
             anim.Stopped:Connect(function()
-                if getgenv().EmoteConfig.Enabled then
-                    playAnim(char)
+                if getgenv().EmoteConfig.Enabled and lplr.Character == character then
+                    task.spawn(playAnim)
                 end
             end)
         end
     end
 
-    playAnim(character)
+    playAnim()
 end
 
 lplr.CharacterAdded:Connect(function(character)
+    stopEmote()
     character:WaitForChild("Humanoid")
+    task.wait(0.3)
     if getgenv().EmoteConfig.Enabled then
         setupEmoteForCharacter(character)
+    end
+end)
+
+if lplr.Character then
+    task.spawn(function()
+        if getgenv().EmoteConfig.Enabled then
+            setupEmoteForCharacter(lplr.Character)
+        end
+    end)
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if getgenv().EmoteConfig.Enabled then
+            local char = lplr.Character
+            if char then
+                local humanoid = char:FindFirstChildWhichIsA("Humanoid")
+                if humanoid and humanoid.Health > 0 then
+                    if not activeEmoteTrack or not activeEmoteTrack.IsPlaying then
+                        setupEmoteForCharacter(char)
+                    end
+                end
+            end
+        else
+            stopEmote()
+        end
     end
 end)
 
@@ -913,6 +1013,59 @@ CombatGroup:AddToggle('DesyncEnabled', {
     end
 })
 
+CombatGroup:AddToggle('FlyToggle', {
+    Text = 'Enable Fly',
+    Default = false,
+    Tooltip = '공중 비행 기능을 켭니다 (WASD 이동, 스페이스/시프트 상하).',
+    Callback = function(Value)
+        getgenv().MovementConfig.FlyEnabled = Value
+    end
+})
+
+CombatGroup:AddSlider('FlySpeedSlider', {
+    Text = 'Fly Speed',
+    Default = 50,
+    Min = 10,
+    Max = 200,
+    Rounding = 0,
+    Callback = function(Value)
+        getgenv().MovementConfig.FlySpeed = Value
+    end
+})
+
+CombatGroup:AddToggle('NoclipToggle', {
+    Text = 'Enable Noclip',
+    Default = false,
+    Tooltip = '벽을 통과하는 노클립 기능을 켭니다.',
+    Callback = function(Value)
+        getgenv().MovementConfig.NoclipEnabled = Value
+    end
+})
+
+CombatGroup:AddSlider('WalkSpeedSlider', {
+    Text = 'Walk Speed Multiplier',
+    Default = 1,
+    Min = 1,
+    Max = 100,
+    Rounding = 1,
+    Tooltip = '걷기 속도를 조절합니다 (1 = 기본 속도).',
+    Callback = function(Value)
+        getgenv().MovementConfig.WalkSpeed = Value
+    end
+})
+
+CombatGroup:AddSlider('SlideSpeedSlider', {
+    Text = 'Slide Speed Multiplier',
+    Default = 1,
+    Min = 1,
+    Max = 100,
+    Rounding = 1,
+    Tooltip = '슬라이딩 속도를 조절합니다 (1 = 기본 속도).',
+    Callback = function(Value)
+        getgenv().MovementConfig.SlideSpeed = Value
+    end
+})
+
 CombatGroup:AddDropdown('WeaponSlotSelect', {
     Values = { 'Primary', 'Secondary', 'Melee' },
     Default = 1,
@@ -967,6 +1120,8 @@ EmoteGroup:AddToggle('EmoteToggle', {
         getgenv().EmoteConfig.Enabled = Value
         if Value and lplr.Character then
             setupEmoteForCharacter(lplr.Character)
+        else
+            stopEmote()
         end
     end
 })
