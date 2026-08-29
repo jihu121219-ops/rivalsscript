@@ -53,14 +53,18 @@ coroutine.wrap(function()
 end)()
 
 --------------------------------------------------------------------------------
--- 3. 글로벌 설정 및 구성 (Global Configuration)
+-- 3. 글로벌 설정 및 구성 (Global Configuration - 초기값 OFF 설정)
 --------------------------------------------------------------------------------
 getgenv().Config = {
-    Enabled = true,
+    Enabled = false,
     FireRate = 0.0005,
-    WeaponSlot = "Primary", -- "Primary", "Secondary", "Melee" 중 선택 가능
+    WeaponSlot = "Primary",
     FOV = 500,
-    DesyncEnabled = true
+    DesyncEnabled = false,
+    SilentAimEnabled = false,
+    HitPart = "Head",
+    FOVRadius = 300,
+    ShowFOV = true
 }
 
 local slots = {
@@ -71,6 +75,85 @@ local slots = {
 
 local function getSlotNumber()
     return slots[getgenv().Config.WeaponSlot] or 1
+end
+
+--------------------------------------------------------------------------------
+-- 3-1. 사일런트 에임 (Raycast Hook 기반 Silent Aim) 통합[cite: 28]
+--------------------------------------------------------------------------------
+local phem1_plrs = plrs
+local phem2_cs = game:GetService("CollectionService")
+local phem5 = repS
+local phem6 = lplr
+local phem7 = util
+local phem8 = phem7.Raycast
+
+local phem4 = Drawing.new("Circle")
+phem4.Visible = getgenv().Config.ShowFOV
+phem4.Radius = getgenv().Config.FOVRadius
+phem4.Color = Color3.fromRGB(255, 255, 255)
+phem4.Thickness = 1
+phem4.Filled = false
+
+runS.RenderStepped:Connect(function()
+    if ws.CurrentCamera then
+        phem4.Position = ws.CurrentCamera.ViewportSize / 2
+    end
+    phem4.Radius = getgenv().Config.FOVRadius
+    phem4.Visible = getgenv().Config.ShowFOV and getgenv().Config.SilentAimEnabled
+end)
+
+local function phem9()
+    local cam = ws.CurrentCamera
+    if not cam then return nil end
+    local phem10 = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+    local phem11 = nil
+    local phem12 = getgenv().Config.FOVRadius
+    for _, phem14 in phem2_cs:GetTagged("Entity") do
+        if phem14 == phem6.Character then 
+            continue 
+        end
+        local phem15 = phem14:FindFirstChild(getgenv().Config.HitPart, true)
+        if not phem15 or not phem15:IsA("BasePart") then 
+            continue 
+        end
+        local phem16, phem17 = cam:WorldToViewportPoint(phem15.Position)
+        if not phem17 then 
+            continue 
+        end
+        local phem18 = (phem10 - Vector2.new(phem16.X, phem16.Y)).Magnitude
+        if phem18 < phem12 then
+            phem12 = phem18
+            phem11 = phem15
+        end
+    end
+    return phem11
+end
+
+phem7.Raycast = function(self, phem19, phem20, phem21, phem22, phem23, phem24)
+    if not getgenv().Config.SilentAimEnabled then
+        return phem8(self, phem19, phem20, phem21, phem22, phem23, phem24)
+    end
+    if type(phem21) ~= "number" or phem21 < 100 then
+        return phem8(self, phem19, phem20, phem21, phem22, phem23, phem24)
+    end
+    local phem25 = phem9()
+    if not phem25 then
+        return phem8(self, phem19, phem20, phem21, phem22, phem23, phem24)
+    end
+    local phem26 = phem25.Position
+    local phem27 = (phem26 - phem19).Unit
+    local phem28 = (phem26 - phem19).Magnitude
+    if phem28 > phem21 then
+        phem28 = phem21
+        phem26 = phem19 + (phem27 * phem21)
+    end
+    return {
+        Position = phem26,
+        Distance = phem28,
+        Instance = phem25,
+        Material = phem25.Material,
+        Normal = -phem27
+    }
 end
 
 --------------------------------------------------------------------------------
@@ -167,7 +250,7 @@ local function hasKnifeViewModel(targetPlayer)
 end
 
 --------------------------------------------------------------------------------
--- 5. 스킨 및 치장품 언락 (All Unlock / Cosmetic Unlocker)
+-- 5. 올 언락 (All Unlock / Cosmetic Unlocker - 소스 3번 완벽 이식)[cite: 29]
 --------------------------------------------------------------------------------
 task.spawn(function()
     pcall(function()
@@ -178,14 +261,13 @@ task.spawn(function()
         local _enumLib = require(_mods:WaitForChild("EnumLibrary", 10))
         if _enumLib then pcall(function() _enumLib:WaitForEnumBuilder() end) end
 
-        local _cosLib = require(_mods:WaitForChild("CosmeticLibrary", 10))
-        local _itmLib = require(_mods:WaitForChild("ItemLibrary", 10))
+        local _cosLib  = require(_mods:WaitForChild("CosmeticLibrary", 10))
+        local _itmLib  = require(_mods:WaitForChild("ItemLibrary", 10))
         local _datCtrl = require(_ctrl:WaitForChild("PlayerDataController", 10))
 
         local _eq, _favs = {}, {}
-        local _buildingWep = nil
-        local _cfgFile = "rivals_unlocker_config.json"
-        local _saveLock = false
+        local _buildingWep, _viewProf = nil, nil
+        local _lastWep = nil
 
         local function _mkCosmetic(nm, ctype, opts)
             local _base = _cosLib.Cosmetics[nm]
@@ -208,6 +290,9 @@ task.spawn(function()
             end
             return _d
         end
+
+        local _cfgFile = "rivals_unlocker_config.json"
+        local _saveLock = false
 
         local function _stripForSave()
             local _out = {}
@@ -234,7 +319,9 @@ task.spawn(function()
             if not _ok2 or not _raw or _raw == "" then return end
             local _ok3, _dec = pcall(httpS.JSONDecode, httpS, _raw)
             if not _ok3 or not _dec then return end
-            if _dec.favorites then _favs = _dec.favorites end
+            if _dec.favorites then
+                _favs = _dec.favorites
+            end
             if _dec.equipped then
                 _eq = {}
                 for wn, cos in pairs(_dec.equipped) do
@@ -246,7 +333,9 @@ task.spawn(function()
                                     inverted = sd.Inverted,
                                     favoritesOnly = sd.OnlyUseFavorites
                                 })
-                                if _cloned then _eq[wn][ct] = _cloned end
+                                if _cloned then
+                                    _eq[wn][ct] = _cloned
+                                end
                             end
                         end
                     end
@@ -262,14 +351,16 @@ task.spawn(function()
                 task.wait(1)
                 local _payload = _stripForSave()
                 local _ok, _enc = pcall(httpS.JSONEncode, httpS, _payload)
-                if _ok then pcall(writefile, _cfgFile, _enc) end
+                if _ok then
+                    pcall(writefile, _cfgFile, _enc)
+                end
                 _saveLock = false
             end)
         end
 
         _loadCfg()
 
-        local _cosTypes = {"Skin", "Wrap", "Charm", "Dance", "Emote"}
+        local _cosTypes = {"Skin","Wrap","Charm","Dance","Emote"}
         local function _isCosType(cosObj)
             if not cosObj then return false end
             for _, t in ipairs(_cosTypes) do
@@ -297,7 +388,7 @@ task.spawn(function()
         local _origOwns = _cosLib.OwnsCosmetic
         _cosLib.OwnsCosmetic = function(self, inv, nm, wep)
             if nm:find("MISSING_") or nm == "Bubble Gun" then
-                return _origOwns(self, inv, inv, nm, wep)
+                return _origOwns(self, inv, nm, wep)
             end
             local c = _cosLib.Cosmetics[nm]
             if c and _isCosType(c) then return true end
@@ -329,7 +420,9 @@ task.spawn(function()
                     _res[wep] = _res[wep] or {}
                     for nm, isFav in pairs(fv) do
                         local c = _cosLib.Cosmetics[nm]
-                        if c and _isCosType(c) then _res[wep][nm] = isFav end
+                        if c and _isCosType(c) then
+                            _res[wep][nm] = isFav
+                        end
                     end
                 end
                 return _res
@@ -345,31 +438,62 @@ task.spawn(function()
             for k, v in pairs(_d) do _m[k] = v end
             _m.Name = wn
             if _eq[wn] then
-                for ct, cd in pairs(_eq[wn]) do _m[ct] = cd end
+                for ct, cd in pairs(_eq[wn]) do
+                    _m[ct] = cd
+                end
             end
             return _m
         end
 
+        local _fightCtrl
+        pcall(function()
+            _fightCtrl = require(_ctrl:WaitForChild("FighterController", 10))
+        end)
+
         if hookmetamethod then
-            local _remotes = repS:FindFirstChild("Remotes")
-            local _dataRem = _remotes and _remotes:FindFirstChild("Data")
-            local _equipRem = _dataRem and _dataRem:FindFirstChild("EquipCosmetic")
-            local _favRem = _dataRem and _dataRem:FindFirstChild("FavoriteCosmetic")
+            local _remotes   = repS:FindFirstChild("Remotes")
+            local _dataRem   = _remotes and _remotes:FindFirstChild("Data")
+            local _equipRem  = _dataRem and _dataRem:FindFirstChild("EquipCosmetic")
+            local _favRem    = _dataRem and _dataRem:FindFirstChild("FavoriteCosmetic")
+            local _repRem    = _remotes and _remotes:FindFirstChild("Replication")
+            local _fightRem  = _repRem and _repRem:FindFirstChild("Fighter")
+            local _useItmRem = _fightRem and _fightRem:FindFirstChild("UseItem")
 
             if _equipRem then
                 local _onc
                 _onc = hookmetamethod(game, "__namecall", function(self, ...)
-                    if getnamecallmethod() ~= "FireServer" then return _onc(self, ...) end
+                    if getnamecallmethod() ~= "FireServer" then
+                        return _onc(self, ...)
+                    end
                     local _a = {...}
 
+                    if _useItmRem and self == _useItmRem then
+                        local _oid = _a[1]
+                        if _fightCtrl then
+                            pcall(function()
+                                local _f = _fightCtrl:GetFighter(lplr)
+                                if _f and _f.Items then
+                                    for _, itm in pairs(_f.Items) do
+                                        if itm:Get("ObjectID") == _oid then
+                                            _lastWep = itm.Name
+                                            break
+                                        end
+                                    end
+                                end
+                            end)
+                        end
+                    end
+
                     if self == _equipRem then
-                        local _wn = _a[1]
-                        local _ct = _a[2]
-                        local _cn = _a[3]
+                        local _wn   = _a[1]
+                        local _ct   = _a[2]
+                        local _cn   = _a[3]
                         local _opts = _a[4] or {}
                         if _cn and _cn ~= "None" and _cn ~= "" then
                             local _inv = _datCtrl:Get("CosmeticInventory")
-                            if _inv and rawget(_inv, _cn) then return _onc(self, ...) end
+                            if _inv and rawget(_inv, _cn) then
+                                return _onc(self, ...)
+                            end
                         end
                         _eq[_wn] = _eq[_wn] or {}
                         if not _cn or _cn == "None" or _cn == "" then
@@ -407,40 +531,56 @@ task.spawn(function()
             end
         end
 
-        local _cliItem = pcall(function()
-            return require(_lplr.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem)
+        local _cliItem
+        pcall(function()
+            _cliItem = require(lplr.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem)
         end)
-        
-        if _cliItem then
-            pcall(function()
-                local _ciMod = require(_lplr.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem)
-                if _ciMod and _ciMod._CreateViewModel then
-                    local _origCVM = _ciMod._CreateViewModel
-                    _ciMod._CreateViewModel = function(self, vmRef)
-                        local _wn = self.Name
-                        local _wp = self.ClientFighter and self.ClientFighter.Player
-                        _buildingWep = (_wp == lplr) and _wn or nil
-                        if _wp == lplr and _eq[_wn] then
-                            local _dk = self:ToEnum("Data")
-                            if vmRef[_dk] then
-                                if _eq[_wn].Skin then
-                                    vmRef[_dk][self:ToEnum("Skin")] = _eq[_wn].Skin
-                                    vmRef[_dk][self:ToEnum("Name")] = _eq[_wn].Skin.Name
-                                end
-                                if _eq[_wn].Charm then vmRef[_dk][self:ToEnum("Charm")] = _eq[_wn].Charm end
-                                if _eq[_wn].Wrap then vmRef[_dk][self:ToEnum("Wrap")] = _eq[_wn].Wrap end
-                            elseif vmRef.Data then
-                                if _eq[_wn].Skin then vmRef.Data.Skin = _eq[_wn].Skin; vmRef.Data.Name = _eq[_wn].Skin.Name end
-                                if _eq[_wn].Charm then vmRef.Data.Charm = _eq[_wn].Charm end
-                                if _eq[_wn].Wrap then vmRef.Data.Wrap = _eq[_wn].Wrap end
-                            end
+
+        if _cliItem and _cliItem._CreateViewModel then
+            local _origCVM = _cliItem._CreateViewModel
+            _cliItem._CreateViewModel = function(self, vmRef)
+                local _wn  = self.Name
+                local _wp  = self.ClientFighter and self.ClientFighter.Player
+                _buildingWep = (_wp == lplr) and _wn or nil
+                if _wp == lplr and _eq[_wn] then
+                    local _dk = self:ToEnum("Data")
+                    if vmRef[_dk] then
+                        if _eq[_wn].Skin then
+                            vmRef[_dk][self:ToEnum("Skin")] = _eq[_wn].Skin
+                            vmRef[_dk][self:ToEnum("Name")] = _eq[_wn].Skin.Name
                         end
-                        local _r = _origCVM(self, vmRef)
-                        _buildingWep = nil
-                        return _r
+                        if _eq[_wn].Charm then vmRef[_dk][self:ToEnum("Charm")] = _eq[_wn].Charm end
+                        if _eq[_wn].Wrap  then vmRef[_dk][self:ToEnum("Wrap")]  = _eq[_wn].Wrap  end
+                    elseif vmRef.Data then
+                        if _eq[_wn].Skin  then vmRef.Data.Skin  = _eq[_wn].Skin; vmRef.Data.Name = _eq[_wn].Skin.Name end
+                        if _eq[_wn].Charm then vmRef.Data.Charm = _eq[_wn].Charm end
+                        if _eq[_wn].Wrap  then vmRef.Data.Wrap  = _eq[_wn].Wrap  end
                     end
                 end
-            end)
+                local _r = _origCVM(self, vmRef)
+                _buildingWep = nil
+                return _r
+            end
+        end
+
+        local _vmMod = lplr.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.ClientItem:FindFirstChild("ClientViewModel")
+        if _vmMod then
+            local _CVM = require(_vmMod)
+            local _origNew = _CVM.new
+            _CVM.new = function(repData, cliItm)
+                local _wp  = cliItm.ClientFighter and cliItm.ClientFighter.Player
+                local _wn  = _buildingWep or cliItm.Name
+                if _wp == lplr and _eq[_wn] then
+                    local _RC  = require(repS.Modules.ReplicatedClass)
+                    local _dk  = _RC:ToEnum("Data")
+                    repData[_dk] = repData[_dk] or {}
+                    local _cos = _eq[_wn]
+                    if _cos.Skin  then repData[_dk][_RC:ToEnum("Skin")]  = _cos.Skin  end
+                    if _cos.Charm then repData[_dk][_RC:ToEnum("Charm")] = _cos.Charm end
+                    if _cos.Wrap  then repData[_dk][_RC:ToEnum("Wrap")]  = _cos.Wrap  end
+                end
+                return _origNew(repData, cliItm)
+            end
         end
     end)
 end)
@@ -473,7 +613,7 @@ task.spawn(function()
 end)
 
 --------------------------------------------------------------------------------
--- 7. 완벽한 작동형 ESP 시스템 (Drawing-based ESP Engine)
+-- 7. 완벽한 작동형 ESP 시스템 (Drawing-based ESP Engine - 초기값 OFF 설정)
 --------------------------------------------------------------------------------
 local _espObjects = {}
 local _SKEL_CONNECTIONS = {
@@ -527,6 +667,7 @@ local TogglesRef = {
 
 local function _updateESP()
     if not camera then camera = ws.CurrentCamera end
+    if not camera then return end
     local vp = camera.ViewportSize
     local cx, cy = vp.X / 2, vp.Y / 2
     local showBox  = TogglesRef.ESPBox
@@ -649,7 +790,7 @@ local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
 local Window = Library:CreateWindow({
-    Title = 'Rivals - Ultimate Advanced Suite v3.3 (All Unlock + ESP)',
+    Title = '빨딱V1 free버전',
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -662,21 +803,41 @@ local Tabs = {
     ['UI Settings'] = Window:AddTab('Settings'),
 }
 
--- Combat 탭 구성
-local CombatGroup = Tabs.Main:AddLeftGroupbox('Ragebot Configuration')
+-- Combat 탭 구성 (초기값 체크박스 OFF 반영)
+local CombatGroup = Tabs.Main:AddLeftGroupbox('Combat & Ragebot Configuration')
 
 CombatGroup:AddToggle('RagebotEnabled', {
     Text = 'Enable Ragebot',
-    Default = getgenv().Config.Enabled,
+    Default = false,
     Tooltip = '레이지봇 자동 공격 기능을 켜고 끕니다.',
     Callback = function(Value)
         getgenv().Config.Enabled = Value
     end
 })
 
+CombatGroup:AddToggle('SilentAimEnabled', {
+    Text = 'Enable Silent Aim',
+    Default = false,
+    Tooltip = '레이캐스트 기반 사일런트 에임을 활성화합니다.',
+    Callback = function(Value)
+        getgenv().Config.SilentAimEnabled = Value
+    end
+})
+
+CombatGroup:AddDropdown('HitPartSelect', {
+    Values = { 'Head', 'HumanoidRootPart' },
+    Default = 1,
+    Multi = false,
+    Text = 'Silent Aim HitPart',
+    Tooltip = '사일런트 에임이 조준할 타겟 부위를 선택합니다.',
+    Callback = function(Value)
+        getgenv().Config.HitPart = Value
+    end
+})
+
 CombatGroup:AddToggle('DesyncEnabled', {
     Text = 'Enable Desync',
-    Default = getgenv().Config.DesyncEnabled,
+    Default = false,
     Tooltip = '디싱크(위치 속임) 기능을 활성화합니다.',
     Callback = function(Value)
         getgenv().Config.DesyncEnabled = Value
@@ -716,7 +877,18 @@ CombatGroup:AddSlider('FOVSlider', {
     end
 })
 
--- Visuals 탭 구성 (ESP + All Unlock 옵션 추가)
+CombatGroup:AddSlider('SilentAimFOVSlider', {
+    Text = 'Silent Aim FOV Radius',
+    Default = 300,
+    Min = 50,
+    Max = 800,
+    Rounding = 0,
+    Callback = function(Value)
+        getgenv().Config.FOVRadius = Value
+    end
+})
+
+-- Visuals 탭 구성 (ESP 옵션 기본값 OFF 반영)
 local VisualsGroup = Tabs.Visuals:AddLeftGroupbox('ESP & Render Options')
 
 VisualsGroup:AddToggle('ShowBox', {
@@ -761,7 +933,6 @@ VisualsGroup:AddToggle('ShowSkeleton', {
     Callback = function(v) TogglesRef.ESPSkeleton = v end
 })
 
--- Visuals 탭에 All Unlock 그룹박스 추가
 local UnlockGroup = Tabs.Visuals:AddRightGroupbox('Cosmetic / All Unlock')
 
 UnlockGroup:AddToggle('AllUnlockToggle', {
@@ -793,8 +964,6 @@ ThemeManager:ApplyToTab(Tabs['UI Settings'])
 --------------------------------------------------------------------------------
 -- 9. 메인 실행 루프 및 ESP 렌더링 실행 (Main Heartbeat Core Loop)
 --------------------------------------------------------------------------------
-local lastFire = 0
-
 task.spawn(function()
     while true do
         pcall(_updateESP)
@@ -802,6 +971,7 @@ task.spawn(function()
     end
 end)
 
+local lastFire = 0
 runS.Heartbeat:Connect(function()
     updateDeflection()
     local targetPlayer, targetRoot, targetHead = getClosestTarget()
@@ -858,12 +1028,19 @@ runS.Heartbeat:Connect(function()
     local aimedPos = targetPos + randomOffset
     local objSpaceHeadOffset = targetHead.CFrame:ToObjectSpace(CFrame.new(aimedPos))
     
+    local encodedOffset
+    if util.EncodeCField then
+        encodedOffset = util:EncodeCField(objSpaceHeadOffset)
+    else
+        encodedOffset = util:EncodeCFrame(objSpaceHeadOffset)
+    end
+
     local cameradata = {}
     cameradata[utf8.char(1)] = {
         [utf8.char(0)] = util:EncodeCFrame(aimCF),
         [utf8.char(1)] = util:EncodeCFrame(targetCF),
         [utf8.char(2)] = targetHead,
-        [utf8.char(3)] = util:EncodeCFrame(objSpaceHeadOffset)
+        [utf8.char(3)] = encodedOffset
     }
     
     repS.Remotes.Replication.Fighter.UseItem:FireServer(
@@ -874,4 +1051,4 @@ runS.Heartbeat:Connect(function()
     )
 end)
 
-print(">> Rivals - Ultimate Suite (All Unlock + ESP + Ragebot) Successfully Loaded!")
+print(">> 빨딱V1 free버전")
