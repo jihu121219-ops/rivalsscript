@@ -13,9 +13,6 @@ local enum = require(repS:WaitForChild("Modules"):WaitForChild("EnumLibrary"))
 local FighterController = require(lplr.PlayerScripts.Controllers:WaitForChild("FighterController"))
 local SpectateController = require(lplr.PlayerScripts.Controllers:WaitForChild("SpectateController"))
 
---------------------------------------------------------------------------------
--- 0. 3인칭(Third Person) 설정 및 기능
---------------------------------------------------------------------------------
 getgenv().ThirdPersonConfig = {
     Enabled = false,
     Distance = 10
@@ -35,7 +32,6 @@ runS.RenderStepped:Connect(function()
     lplr.CameraMaxZoomDistance = 500
     lplr.CameraMinZoomDistance = 0.5
     
-    -- 캐릭터 머리 뒤쪽으로 카메라 위치 강제 조정
     local dist = getgenv().ThirdPersonConfig.Distance
     local camCF = cam.CFrame
     local focusPos = head.Position + Vector3.new(0, 0, 0)
@@ -44,9 +40,6 @@ runS.RenderStepped:Connect(function()
     cam.CFrame = CFrame.new(newPos, focusPos + Vector3.new(0, 1, 0))
 end)
 
---------------------------------------------------------------------------------
--- 1. 이모트 애니메이션 관련 함수 및 설정
---------------------------------------------------------------------------------
 getgenv().EmoteConfig = {
     Enabled = false,
     AnimationId = "92281817840531",
@@ -114,9 +107,6 @@ lplr.CharacterAdded:Connect(function(character)
     end
 end)
 
---------------------------------------------------------------------------------
--- 2. 안티체트 바이패스 및 후크 설정 (Anti-Cheat Bypass)
---------------------------------------------------------------------------------
 local _stbl 
 _stbl = hookfunction(getrenv().setmetatable, newcclosure(function(tbl, mt)
     if mt and typeof(mt) == "table" and rawget(mt, "__mode") == "kv" then
@@ -153,9 +143,6 @@ coroutine.wrap(function()
     end)
 end)()
 
---------------------------------------------------------------------------------
--- 3. 글로벌 설정 및 구성 (Global Configuration - 초기값 OFF 설정)
---------------------------------------------------------------------------------
 getgenv().Config = {
     Enabled = false,
     FireRate = 0.0005,
@@ -178,9 +165,6 @@ local function getSlotNumber()
     return slots[getgenv().Config.WeaponSlot] or 1
 end
 
---------------------------------------------------------------------------------
--- 3-1. 사일런트 에임 (Raycast Hook 기반 Silent Aim) 통합
---------------------------------------------------------------------------------
 local phem1_plrs = plrs
 local phem2_cs = game:GetService("CollectionService")
 local phem5 = repS
@@ -257,9 +241,6 @@ phem7.Raycast = function(self, phem19, phem20, phem21, phem22, phem23, phem24)
     }
 end
 
---------------------------------------------------------------------------------
--- 4. 대상 식별 및 팀 판독 로직 (Target Validation & Enemy Check)
---------------------------------------------------------------------------------
 local deflecting = {}
 plrs.PlayerRemoving:Connect(function(player)
     deflecting[player] = nil
@@ -350,9 +331,6 @@ local function hasKnifeViewModel(targetPlayer)
     return false
 end
 
---------------------------------------------------------------------------------
--- 5. 올 언락 (All Unlock / Cosmetic Unlocker)
---------------------------------------------------------------------------------
 task.spawn(function()
     pcall(function()
         local _pscripts = lplr.PlayerScripts
@@ -686,9 +664,6 @@ task.spawn(function()
     end)
 end)
 
---------------------------------------------------------------------------------
--- 6. 무기 장착 관리 루프 (Weapon Equipment Loop)
---------------------------------------------------------------------------------
 task.spawn(function()
     local localFighter = FighterController.LocalFighter
     while not localFighter do
@@ -713,9 +688,6 @@ task.spawn(function()
     end
 end)
 
---------------------------------------------------------------------------------
--- 7. 완벽한 작동형 ESP 시스템 (Drawing-based ESP Engine)
---------------------------------------------------------------------------------
 local _espObjects = {}
 local _SKEL_CONNECTIONS = {
     {"Head", "UpperTorso"},
@@ -882,9 +854,6 @@ plrs.PlayerRemoving:Connect(function(p)
     _removeESP(p)
 end)
 
---------------------------------------------------------------------------------
--- 8. LinoriaLib UI 구축 (User Interface Initialization)
---------------------------------------------------------------------------------
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
 local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
@@ -904,7 +873,6 @@ local Tabs = {
     ['UI Settings'] = Window:AddTab('Settings'),
 }
 
--- Combat 탭 구성
 local CombatGroup = Tabs.Main:AddLeftGroupbox('Combat & Ragebot Configuration')
 
 CombatGroup:AddToggle('RagebotEnabled', {
@@ -989,7 +957,6 @@ CombatGroup:AddSlider('SilentAimFOVSlider', {
     end
 })
 
--- Combat 탭에 이모트 그룹 추가
 local EmoteGroup = Tabs.Main:AddRightGroupbox('Custom Emote Animation')
 
 EmoteGroup:AddToggle('EmoteToggle', {
@@ -1026,7 +993,6 @@ EmoteGroup:AddSlider('EmoteSpeedSlider', {
     end
 })
 
--- Visuals 탭 구성
 local VisualsGroup = Tabs.Visuals:AddLeftGroupbox('ESP & Render Options')
 
 VisualsGroup:AddToggle('ShowBox', {
@@ -1084,7 +1050,6 @@ UnlockGroup:AddToggle('AllUnlockToggle', {
 
 UnlockGroup:AddLabel('Status: Active & Loaded')
 
--- Visuals 탭 오른쪽에 3인칭(Third Person) 그룹 추가
 local ThirdPersonGroup = Tabs.Visuals:AddRightGroupbox('Third Person Options')
 
 ThirdPersonGroup:AddToggle('ThirdPersonToggle', {
@@ -1111,7 +1076,6 @@ ThirdPersonGroup:AddSlider('ThirdPersonDistanceSlider', {
     end
 })
 
--- UI Settings 탭 설정
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu Management')
 MenuGroup:AddButton('Unload Script', function() Library:Unload() end)
 MenuGroup:AddLabel('Menu Keybind'):AddKeyPicker('MenuKeybind', { Default = 'RightShift', NoUI = true, Text = 'Menu keybind' })
@@ -1126,9 +1090,6 @@ SaveManager:SetFolder('RivalsUltimateSuite/configs')
 SaveManager:BuildConfigSection(Tabs['UI Settings'])
 ThemeManager:ApplyToTab(Tabs['UI Settings'])
 
---------------------------------------------------------------------------------
--- 9. 메인 실행 루프 및 ESP 렌더링 실행 (Main Heartbeat Core Loop)
---------------------------------------------------------------------------------
 task.spawn(function()
     while true do
         pcall(_updateESP)
@@ -1216,4 +1177,4 @@ runS.Heartbeat:Connect(function()
     )
 end)
 
-print(">> 빨딱V1 free버전")
+print("빨딱V1 free버전")
