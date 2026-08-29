@@ -14,6 +14,107 @@ local FighterController = require(lplr.PlayerScripts.Controllers:WaitForChild("F
 local SpectateController = require(lplr.PlayerScripts.Controllers:WaitForChild("SpectateController"))
 
 --------------------------------------------------------------------------------
+-- 0. 3인칭(Third Person) 설정 및 기능
+--------------------------------------------------------------------------------
+getgenv().ThirdPersonConfig = {
+    Enabled = false,
+    Distance = 10
+}
+
+runS.RenderStepped:Connect(function()
+    if not getgenv().ThirdPersonConfig.Enabled then return end
+    local char = lplr.Character
+    if not char then return end
+    local head = char:FindFirstChild("Head")
+    if not head then return end
+    
+    local cam = ws.CurrentCamera
+    if not cam then return end
+    
+    cam.CameraType = Enum.CameraType.Custom
+    lplr.CameraMaxZoomDistance = 500
+    lplr.CameraMinZoomDistance = 0.5
+    
+    -- 캐릭터 머리 뒤쪽으로 카메라 위치 강제 조정
+    local dist = getgenv().ThirdPersonConfig.Distance
+    local camCF = cam.CFrame
+    local focusPos = head.Position + Vector3.new(0, 0, 0)
+    local newPos = focusPos - (camCF.LookVector * dist) + Vector3.new(0, 1.5, 0)
+    
+    cam.CFrame = CFrame.new(newPos, focusPos + Vector3.new(0, 1, 0))
+end)
+
+--------------------------------------------------------------------------------
+-- 1. 이모트 애니메이션 관련 함수 및 설정
+--------------------------------------------------------------------------------
+getgenv().EmoteConfig = {
+    Enabled = false,
+    AnimationId = "92281817840531",
+    Speed = 40
+}
+
+local function anim2track(asset_id)
+    local objs = game:GetObjects(asset_id)
+    for i = 1, #objs do
+        if objs[i]:IsA("Animation") then
+            return objs[i].AnimationId
+        end
+    end
+    return asset_id
+end
+
+local function setupEmoteForCharacter(character)
+    local Hum = character:FindFirstChildWhichIsA("Humanoid")
+    if not Hum then return end
+    
+    local animid = getgenv().EmoteConfig.AnimationId
+    if not animid:find("rbxassetid://") then
+        animid = "rbxassetid://" .. animid
+    end
+    pcall(function()
+        animid = anim2track(animid)
+    end)
+    
+    local animation = Instance.new("Animation")
+    animation.AnimationId = animid
+
+    local function playAnim(char)
+        if not getgenv().EmoteConfig.Enabled then return end
+        local humanoid = char:FindFirstChildWhichIsA("Humanoid")
+        if not humanoid then return end
+        
+        for _, track in next, humanoid:GetPlayingAnimationTracks() do
+            if track.Animation and track.Animation.AnimationId == animation.AnimationId then
+                return
+            end
+        end
+        
+        local success, anim = pcall(function()
+            return humanoid:LoadAnimation(animation)
+        end)
+        if success and anim then
+            anim.Priority = Enum.AnimationPriority.Action4
+            anim:Play()
+            anim:AdjustSpeed(getgenv().EmoteConfig.Speed)
+            anim.Stopped:Connect(function()
+                if getgenv().EmoteConfig.Enabled then
+                    playAnim(char)
+                end
+            end)
+        end
+    end
+
+    playAnim(character)
+end
+
+lplr.CharacterAdded:Connect(function(character)
+    character:WaitForChild("Humanoid")
+    if getgenv().EmoteConfig.Enabled then
+        setupEmoteForCharacter(character)
+    end
+end)
+
+--------------------------------------------------------------------------------
 -- 2. 안티체트 바이패스 및 후크 설정 (Anti-Cheat Bypass)
 --------------------------------------------------------------------------------
 local _stbl 
@@ -78,7 +179,7 @@ local function getSlotNumber()
 end
 
 --------------------------------------------------------------------------------
--- 3-1. 사일런트 에임 (Raycast Hook 기반 Silent Aim) 통합[cite: 28]
+-- 3-1. 사일런트 에임 (Raycast Hook 기반 Silent Aim) 통합
 --------------------------------------------------------------------------------
 local phem1_plrs = plrs
 local phem2_cs = game:GetService("CollectionService")
@@ -250,7 +351,7 @@ local function hasKnifeViewModel(targetPlayer)
 end
 
 --------------------------------------------------------------------------------
--- 5. 올 언락 (All Unlock / Cosmetic Unlocker - 소스 3번 완벽 이식)[cite: 29]
+-- 5. 올 언락 (All Unlock / Cosmetic Unlocker)
 --------------------------------------------------------------------------------
 task.spawn(function()
     pcall(function()
@@ -613,7 +714,7 @@ task.spawn(function()
 end)
 
 --------------------------------------------------------------------------------
--- 7. 완벽한 작동형 ESP 시스템 (Drawing-based ESP Engine - 초기값 OFF 설정)
+-- 7. 완벽한 작동형 ESP 시스템 (Drawing-based ESP Engine)
 --------------------------------------------------------------------------------
 local _espObjects = {}
 local _SKEL_CONNECTIONS = {
@@ -803,7 +904,7 @@ local Tabs = {
     ['UI Settings'] = Window:AddTab('Settings'),
 }
 
--- Combat 탭 구성 (초기값 체크박스 OFF 반영)
+-- Combat 탭 구성
 local CombatGroup = Tabs.Main:AddLeftGroupbox('Combat & Ragebot Configuration')
 
 CombatGroup:AddToggle('RagebotEnabled', {
@@ -888,7 +989,44 @@ CombatGroup:AddSlider('SilentAimFOVSlider', {
     end
 })
 
--- Visuals 탭 구성 (ESP 옵션 기본값 OFF 반영)
+-- Combat 탭에 이모트 그룹 추가
+local EmoteGroup = Tabs.Main:AddRightGroupbox('Custom Emote Animation')
+
+EmoteGroup:AddToggle('EmoteToggle', {
+    Text = 'Enable Custom Emote',
+    Default = false,
+    Tooltip = '커스텀 이모트 애니메이션 반복 재생을 켭니다.',
+    Callback = function(Value)
+        getgenv().EmoteConfig.Enabled = Value
+        if Value and lplr.Character then
+            setupEmoteForCharacter(lplr.Character)
+        end
+    end
+})
+
+EmoteGroup:AddInput('EmoteIDInput', {
+    Default = '92281817840531',
+    Numeric = false,
+    Finished = true,
+    Text = 'Animation ID',
+    Tooltip = '재생할 로블록스 애니메이션 ID를 입력하세요.',
+    Callback = function(Value)
+        getgenv().EmoteConfig.AnimationId = Value
+    end
+})
+
+EmoteGroup:AddSlider('EmoteSpeedSlider', {
+    Text = 'Animation Speed',
+    Default = 40,
+    Min = 1,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(Value)
+        getgenv().EmoteConfig.Speed = Value
+    end
+})
+
+-- Visuals 탭 구성
 local VisualsGroup = Tabs.Visuals:AddLeftGroupbox('ESP & Render Options')
 
 VisualsGroup:AddToggle('ShowBox', {
@@ -945,6 +1083,33 @@ UnlockGroup:AddToggle('AllUnlockToggle', {
 })
 
 UnlockGroup:AddLabel('Status: Active & Loaded')
+
+-- Visuals 탭 오른쪽에 3인칭(Third Person) 그룹 추가
+local ThirdPersonGroup = Tabs.Visuals:AddRightGroupbox('Third Person Options')
+
+ThirdPersonGroup:AddToggle('ThirdPersonToggle', {
+    Text = 'Enable Third Person',
+    Default = false,
+    Tooltip = '3인칭 카메라 시점을 활성화합니다.',
+    Callback = function(Value)
+        getgenv().ThirdPersonConfig.Enabled = Value
+        if not Value and ws.CurrentCamera then
+            ws.CurrentCamera.CameraType = Enum.CameraType.Custom
+        end
+    end
+})
+
+ThirdPersonGroup:AddSlider('ThirdPersonDistanceSlider', {
+    Text = 'Camera Distance',
+    Default = 10,
+    Min = 2,
+    Max = 30,
+    Rounding = 1,
+    Tooltip = '3인칭 카메라와 캐릭터 사이의 거리를 조절합니다.',
+    Callback = function(Value)
+        getgenv().ThirdPersonConfig.Distance = Value
+    end
+})
 
 -- UI Settings 탭 설정
 local MenuGroup = Tabs['UI Settings']:AddLeftGroupbox('Menu Management')
