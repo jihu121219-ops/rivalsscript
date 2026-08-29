@@ -22,6 +22,105 @@ getgenv().MovementConfig = {
     SlideSpeed = 1 -- 1이 기본
 }
 
+-- 플레이어 플랫폼(기기) 아이콘 가상 변경 설정
+getgenv().PlatformConfig = {
+    Type = "Computer" -- Computer, Console, VR, Mobile 중 선택 가능
+}
+
+-- 로컬 닉네임 변조 설정 (나한테만 보임)
+getgenv().NameConfig = {
+    Enabled = false,
+    Display = "CustomDisplayName",
+    Real = "CustomUsername"
+}
+
+-- 날씨 설정 (Snow, Rain)
+getgenv().WeatherConfig = {
+    Current = "None" -- "None", "Snow", "Rain"
+}
+
+local weatherParticleFolder = Instance.new("Folder")
+weatherParticleFolder.Name = "WeatherParticleFolder"
+weatherParticleFolder.Parent = ws
+
+local function clearWeather()
+    weatherParticleFolder:ClearAllChildren()
+end
+
+local function applyWeather(weatherType)
+    clearWeather()
+    getgenv().WeatherConfig.Current = weatherType
+    
+    if weatherType == "Snow" then
+        local emitter = Instance.new("ParticleEmitter")
+        emitter.Name = "SnowEmitter"
+        emitter.Texture = "rbxassetid://606917390" -- 눈송이 텍스처
+        emitter.Rate = 200
+        emitter.Speed = NumberRange.new(5, 10)
+        emitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 0.5)})
+        emitter.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 0.2)})
+        emitter.Lifetime = NumberRange.new(5, 8)
+        emitter.Acceleration = Vector3.new(0, -2, 0)
+        emitter.VelocitySpread = 50
+        
+        local part = Instance.new("Part")
+        part.Name = "SnowSpawner"
+        part.Size = Vector3.new(1, 1, 1)
+        part.Transparency = 1
+        part.CanCollide = false
+        part.Anchored = true
+        part.Parent = weatherParticleFolder
+        
+        emitter.Parent = part
+        
+        -- 플레이어 머리 위를 따라다니도록 설정
+        task.spawn(function()
+            while getgenv().WeatherConfig.Current == "Snow" do
+                local char = lplr.Character
+                if char and char:FindFirstChild("HumanoidRootPart") then
+                    part.Position = char.HumanoidRootPart.Position + Vector3.new(0, 30, 0)
+                end
+                task.wait(0.2)
+            end
+            part:Destroy()
+        end)
+        
+    elseif weatherType == "Rain" then
+        local emitter = Instance.new("ParticleEmitter")
+        emitter.Name = "RainEmitter"
+        emitter.Texture = "rbxassetid://606917390"
+        emitter.Rate = 500
+        emitter.Speed = NumberRange.new(40, 60)
+        emitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.15), NumberSequenceKeypoint.new(1, 0.15)})
+        emitter.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.4), NumberSequenceKeypoint.new(1, 0.4)})
+        emitter.Lifetime = NumberRange.new(1, 1.5)
+        emitter.Acceleration = Vector3.new(0, -50, 0)
+        emitter.VelocitySpread = 10
+        
+        local part = Instance.new("Part")
+        part.Name = "RainSpawner"
+        part.Size = Vector3.new(1, 1, 1)
+        part.Transparency = 1
+        part.CanCollide = false
+        part.Anchored = true
+        part.Parent = weatherParticleFolder
+        
+        emitter.Parent = part
+        
+        -- 플레이어 머리 위를 따라다니도록 설정
+        task.spawn(function()
+            while getgenv().WeatherConfig.Current == "Rain" do
+                local char = lplr.Character
+                if char and char:FindFirstChild("HumanoidRootPart") then
+                    part.Position = char.HumanoidRootPart.Position + Vector3.new(0, 35, 0)
+                end
+                task.wait(0.2)
+            end
+            part:Destroy()
+        end)
+    end
+end
+
 -- Fly 및 Noclip 구현
 runS.Stepped:Connect(function()
     local char = lplr.Character
@@ -30,7 +129,6 @@ runS.Stepped:Connect(function()
     local hum = char:FindFirstChildWhichIsA("Humanoid")
     
     if hum then
-        -- 기본 WalkSpeed 배율 적용 (로블록스 기본 16 기준, 1 = 16)
         hum.WalkSpeed = 16 * getgenv().MovementConfig.WalkSpeed
     end
 
@@ -57,11 +155,56 @@ runS.Stepped:Connect(function()
     end
 end)
 
--- 슬라이딩 스피드 조절 패치 (FighterController 또는 관련 이동 처리 훅)
-task.spawn(function()
-    pcall(function()
-        local moveModule = lplr.PlayerScripts.Controllers:FindFirstChild("MovementController") or lplr.PlayerScripts.Controllers:FindFirstChild("PlayerController")
-        -- 게임 내 슬라이딩 속도 배율 관리를 위한 훅 처리 보완
+-- 플랫폼(기기) 정보 조작 훅 (강력하게 수정됨)
+pcall(function()
+    local oldIndex
+    oldIndex = hookmetamethod(game, "__index", function(self, k)
+        if self == lplr and (k == "Platform" or k == "GetPlatform") then
+            local t = getgenv().PlatformConfig.Type
+            if t == "Console" then
+                return Enum.Platform.XboxOne
+            elseif t == "VR" then
+                return Enum.Platform.XBox360
+            elseif t == "Mobile" then
+                return Enum.Platform.IOS
+            else
+                return Enum.Platform.Computer
+            end
+        end
+        return oldIndex(self, k)
+    end)
+
+    local oldGetPlatform
+    oldGetPlatform = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        if (method == "GetPlatform" or method == "GetDevicePlatform") and self == plrs then
+            local t = getgenv().PlatformConfig.Type
+            if t == "Console" then
+                return Enum.Platform.XboxOne
+            elseif t == "VR" then
+                return Enum.Platform.XBox360
+            elseif t == "Mobile" then
+                return Enum.Platform.IOS
+            else
+                return Enum.Platform.Computer
+            end
+        end
+        return oldGetPlatform(self, ...)
+    end)
+end)
+
+-- 로컬 닉네임/디스플레이 닉네임 변조 훅 (나한테만 보이도록 처리)
+pcall(function()
+    local oldIndexName
+    oldIndexName = hookmetamethod(game, "__index", function(self, k)
+        if getgenv().NameConfig.Enabled and self == lplr then
+            if k == "DisplayName" then
+                return getgenv().NameConfig.Display
+            elseif k == "Name" then
+                return getgenv().NameConfig.Real
+            end
+        end
+        return oldIndexName(self, k)
     end)
 end)
 
@@ -94,7 +237,7 @@ end)
 
 getgenv().EmoteConfig = {
     Enabled = false,
-    AnimationId = "92281817840531",
+    AnimationId = "113547795536875",
     Speed = 40
 }
 
@@ -970,6 +1113,7 @@ local Window = Library:CreateWindow({
 local Tabs = {
     Main = Window:AddTab('Combat'),
     Visuals = Window:AddTab('Visuals'),
+    World = Window:AddTab('World'), -- World 탭 추가
     ['UI Settings'] = Window:AddTab('Settings'),
 }
 
@@ -1126,14 +1270,27 @@ EmoteGroup:AddToggle('EmoteToggle', {
     end
 })
 
-EmoteGroup:AddInput('EmoteIDInput', {
-    Default = '92281817840531',
-    Numeric = false,
-    Finished = true,
-    Text = 'Animation ID',
-    Tooltip = '재생할 로블록스 애니메이션 ID를 입력하세요.',
+local EmoteIDs = {
+    ['Gangnam Style (Evercyan)'] = '88024974500195',
+    ['Gangnam Style (Microwaved)'] = '113547795536875',
+    ['Spinning Emote'] = '129740989205970',
+    ['Dizzy (Classic)'] = '3934986896'
+}
+
+EmoteGroup:AddDropdown('EmoteSelect', {
+    Values = { 'Gangnam Style (Evercyan)', 'Gangnam Style (Microwaved)', 'Spinning Emote', 'Dizzy (Classic)' },
+    Default = 2,
+    Multi = false,
+    Text = 'Select Emote',
+    Tooltip = '사용할 이모트 종류를 선택하세요.',
     Callback = function(Value)
-        getgenv().EmoteConfig.AnimationId = Value
+        local id = EmoteIDs[Value]
+        if id then
+            getgenv().EmoteConfig.AnimationId = id
+            if getgenv().EmoteConfig.Enabled and lplr.Character then
+                setupEmoteForCharacter(lplr.Character)
+            end
+        end
     end
 })
 
@@ -1192,6 +1349,51 @@ VisualsGroup:AddToggle('ShowSkeleton', {
     Callback = function(v) TogglesRef.ESPSkeleton = v end
 })
 
+-- Visuals 탭에 기기(플랫폼) 변경 및 닉네임 변경 그룹 추가
+local PlatformGroup = Tabs.Visuals:AddRightGroupbox('Device & Name Changer')
+
+PlatformGroup:AddDropdown('PlatformSelect', {
+    Values = { 'Computer', 'Console', 'VR', 'Mobile' },
+    Default = 1,
+    Multi = false,
+    Text = 'Display Device',
+    Tooltip = '프로필에 표시될 기기 아이콘(PC, 컨트롤러, VR, 모바일)을 변경합니다.',
+    Callback = function(Value)
+        getgenv().PlatformConfig.Type = Value
+    end
+})
+
+PlatformGroup:AddToggle('NameChangeToggle', {
+    Text = 'Enable Local Name Changer',
+    Default = false,
+    Tooltip = '본인 화면에서만 닉네임과 디스플레이 닉네임이 변경되도록 합니다.',
+    Callback = function(v)
+        getgenv().NameConfig.Enabled = v
+    end
+})
+
+PlatformGroup:AddInput('DisplayInput', {
+    Default = 'CustomDisplayName',
+    Numeric = false,
+    Finished = true,
+    Text = 'Custom Display Name',
+    Tooltip = '변경할 디스플레이 닉네임을 입력하세요.',
+    Callback = function(Value)
+        getgenv().NameConfig.Display = Value
+    end
+})
+
+PlatformGroup:AddInput('RealInput', {
+    Default = 'CustomUsername',
+    Numeric = false,
+    Finished = true,
+    Text = 'Custom Real Username',
+    Tooltip = '변경할 실제 유저네임을 입력하세요.',
+    Callback = function(Value)
+        getgenv().NameConfig.Real = Value
+    end
+})
+
 local UnlockGroup = Tabs.Visuals:AddRightGroupbox('Cosmetic / All Unlock')
 
 UnlockGroup:AddToggle('AllUnlockToggle', {
@@ -1228,6 +1430,20 @@ ThirdPersonGroup:AddSlider('ThirdPersonDistanceSlider', {
     Tooltip = '3인칭 카메라와 캐릭터 사이의 거리를 조절합니다.',
     Callback = function(Value)
         getgenv().ThirdPersonConfig.Distance = Value
+    end
+})
+
+-- World 탭 및 날씨 설정 그룹 추가
+local WeatherGroup = Tabs.World:AddLeftGroupbox('Weather Controls')
+
+WeatherGroup:AddDropdown('WeatherSelect', {
+    Values = { 'None', 'Snow', 'Rain' },
+    Default = 1,
+    Multi = false,
+    Text = 'Select Weather',
+    Tooltip = '원하는 날씨(눈 또는 비)를 선택합니다.',
+    Callback = function(Value)
+        applyWeather(Value)
     end
 })
 
