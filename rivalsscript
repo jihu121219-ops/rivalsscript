@@ -4,6 +4,7 @@ local runS = cloneref(game:GetService("RunService"))
 local ws = cloneref(game:GetService("Workspace"))
 local uis = cloneref(game:GetService("UserInputService"))
 local httpS = cloneref(game:GetService("HttpService"))
+local lighting = cloneref(game:GetService("Lighting"))
 local camera = ws.CurrentCamera
 local lplr = plrs.LocalPlayer
 
@@ -34,9 +35,28 @@ getgenv().NameConfig = {
     Real = "CustomUsername"
 }
 
--- 날씨 설정 (Snow, Rain)
-getgenv().WeatherConfig = {
-    Current = "None" -- "None", "Snow", "Rain"
+-- 월드(조명/대기/날씨) 및 스푸퍼 설정
+getgenv().WorldConfig = {
+    Fullbright = false,
+    RemoveFog = false,
+    NoShadows = false,
+    Weather = "None",
+    ColorTint = "None" -- "None", "Red", "Blue"
+}
+
+-- 화면 색상 필터용 객체 생성
+local colorCorrection = lighting:FindFirstChild("CustomColorCorrection")
+if not colorCorrection then
+    colorCorrection = Instance.new("ColorCorrectionEffect")
+    colorCorrection.Name = "CustomColorCorrection"
+    colorCorrection.Parent = lighting
+end
+
+getgenv().SpooferConfig = {
+    LevelSpoof = false,
+    LevelValue = 999,
+    StreakSpoof = false,
+    StreakValue = 100
 }
 
 local weatherParticleFolder = Instance.new("Folder")
@@ -49,7 +69,7 @@ end
 
 local function applyWeather(weatherType)
     clearWeather()
-    getgenv().WeatherConfig.Current = weatherType
+    getgenv().WorldConfig.Weather = weatherType
     
     if weatherType == "Snow" then
         local emitter = Instance.new("ParticleEmitter")
@@ -73,9 +93,8 @@ local function applyWeather(weatherType)
         
         emitter.Parent = part
         
-        -- 플레이어 머리 위를 따라다니도록 설정
         task.spawn(function()
-            while getgenv().WeatherConfig.Current == "Snow" do
+            while getgenv().WorldConfig.Weather == "Snow" do
                 local char = lplr.Character
                 if char and char:FindFirstChild("HumanoidRootPart") then
                     part.Position = char.HumanoidRootPart.Position + Vector3.new(0, 30, 0)
@@ -107,9 +126,8 @@ local function applyWeather(weatherType)
         
         emitter.Parent = part
         
-        -- 플레이어 머리 위를 따라다니도록 설정
         task.spawn(function()
-            while getgenv().WeatherConfig.Current == "Rain" do
+            while getgenv().WorldConfig.Weather == "Rain" do
                 local char = lplr.Character
                 if char and char:FindFirstChild("HumanoidRootPart") then
                     part.Position = char.HumanoidRootPart.Position + Vector3.new(0, 35, 0)
@@ -155,7 +173,46 @@ runS.Stepped:Connect(function()
     end
 end)
 
--- 플랫폼(기기) 정보 조작 훅 (강력하게 수정됨)
+-- 라이팅 및 컬러 틴트(빨강/파랑) 처리 루프
+runS.RenderStepped:Connect(function()
+    if getgenv().WorldConfig.Fullbright then
+        lighting.Brightness = 2
+        lighting.GlobalShadows = not getgenv().WorldConfig.NoShadows
+    end
+    if getgenv().WorldConfig.RemoveFog then
+        lighting.FogEnd = 9e9
+        for _, effect in ipairs(lighting:GetChildren()) do
+            if effect:IsA("Atmosphere") then effect.Density = 0 end
+        end
+    end
+
+    -- 빨간색/파란색 화면 밝기 및 색조 적용
+    local tint = getgenv().WorldConfig.ColorTint
+    if tint == "Red" then
+        colorCorrection.TintColor = Color3.fromRGB(255, 180, 180)
+        colorCorrection.Brightness = 0.15
+        colorCorrection.Enabled = true
+    elseif tint == "Blue" then
+        colorCorrection.TintColor = Color3.fromRGB(180, 210, 255)
+        colorCorrection.Brightness = 0.15
+        colorCorrection.Enabled = true
+    else
+        colorCorrection.Brightness = 0
+        colorCorrection.Enabled = false
+    end
+end)
+
+-- 프로필 및 스탯 스푸퍼 처리 루프
+runS.Heartbeat:Connect(function()
+    if getgenv().SpooferConfig.LevelSpoof then
+        lplr:SetAttribute("Level", getgenv().SpooferConfig.LevelValue)
+    end
+    if getgenv().SpooferConfig.StreakSpoof then
+        lplr:SetAttribute("WinStreak", getgenv().SpooferConfig.StreakValue)
+    end
+end)
+
+-- 플랫폼(기기) 정보 조작 훅
 pcall(function()
     local oldIndex
     oldIndex = hookmetamethod(game, "__index", function(self, k)
@@ -193,7 +250,7 @@ pcall(function()
     end)
 end)
 
--- 로컬 닉네임/디스플레이 닉네임 변조 훅 (나한테만 보이도록 처리)
+-- 로컬 닉네임/디스플레이 닉네임 변조 훅
 pcall(function()
     local oldIndexName
     oldIndexName = hookmetamethod(game, "__index", function(self, k)
@@ -388,6 +445,9 @@ end)()
 
 getgenv().Config = {
     Enabled = false,
+    TriggerbotEnabled = false,
+    TriggerDelay = 0,
+    Ragebot2Enabled = false,
     FireRate = 0.0005,
     WeaponSlot = "Primary",
     FOV = 500,
@@ -395,7 +455,14 @@ getgenv().Config = {
     SilentAimEnabled = false,
     HitPart = "Head",
     FOVRadius = 300,
-    ShowFOV = true
+    ShowFOV = true,
+    -- FOV 색상 설정용 변수 추가
+    FOVColor1 = Color3.fromRGB(255, 255, 255),
+    FOVColor2 = Color3.fromRGB(255, 0, 0),
+    FOVColor3 = Color3.fromRGB(0, 255, 0),
+    FOVInnerColor = Color3.fromRGB(0, 0, 0),
+    FOVInnerFilled = false,
+    ColorLoopMode = "Fixed" -- "Fixed" 또는 순환용
 }
 
 local slots = {
@@ -422,12 +489,34 @@ phem4.Color = Color3.fromRGB(255, 255, 255)
 phem4.Thickness = 1
 phem4.Filled = false
 
+-- FOV 3가지 테두리 색상 루프용 변수
+local colorLoopTimer = 0
+
 runS.RenderStepped:Connect(function()
     if ws.CurrentCamera then
         phem4.Position = ws.CurrentCamera.ViewportSize / 2
     end
     phem4.Radius = getgenv().Config.FOVRadius
     phem4.Visible = getgenv().Config.ShowFOV and getgenv().Config.SilentAimEnabled
+
+    -- 테두리 색상 3가지 순환 또는 지정 적용
+    colorLoopTimer = (colorLoopTimer + tick()) % 3
+    if getgenv().Config.ColorLoopMode == "Loop3" then
+        local step = math.floor(tick() * 2) % 3
+        if step == 0 then
+            phem4.Color = getgenv().Config.FOVColor1
+        elseif step == 1 then
+            phem4.Color = getgenv().Config.FOVColor2
+        else
+            phem4.Color = getgenv().Config.FOVColor3
+        end
+    else
+        phem4.Color = getgenv().Config.FOVColor1
+    end
+
+    -- 원 안의 색상 및 채우기 적용
+    phem4.Filled = getgenv().Config.FOVInnerFilled
+    phem4.Transparency = getgenv().Config.FOVInnerFilled and 0.5 or 1
 end)
 
 local function phem9()
@@ -1113,7 +1202,7 @@ local Window = Library:CreateWindow({
 local Tabs = {
     Main = Window:AddTab('Combat'),
     Visuals = Window:AddTab('Visuals'),
-    World = Window:AddTab('World'), -- World 탭 추가
+    World = Window:AddTab('World'),
     ['UI Settings'] = Window:AddTab('Settings'),
 }
 
@@ -1125,6 +1214,36 @@ CombatGroup:AddToggle('RagebotEnabled', {
     Tooltip = '레이지봇 자동 공격 기능을 켜고 끕니다.',
     Callback = function(Value)
         getgenv().Config.Enabled = Value
+    end
+})
+
+CombatGroup:AddToggle('Ragebot2Enabled', {
+    Text = 'Enable Ragebot 2 (Auto Fire)',
+    Default = false,
+    Tooltip = '추가된 레이지봇 자동 공격 기능을 켜고 끕니다.',
+    Callback = function(Value)
+        getgenv().Config.Ragebot2Enabled = Value
+    end
+})
+
+CombatGroup:AddToggle('TriggerbotEnabled', {
+    Text = 'Enable Triggerbot',
+    Default = false,
+    Tooltip = '조준 시 자동으로 발사하는 트리거봇을 켭니다.',
+    Callback = function(Value)
+        getgenv().Config.TriggerbotEnabled = Value
+    end
+})
+
+CombatGroup:AddSlider('TriggerDelay', {
+    Text = 'Triggerbot Delay (ms)',
+    Default = 0,
+    Min = 0,
+    Max = 500,
+    Rounding = 0,
+    Tooltip = '트리거봇 발사 지연 시간(밀리초)을 조절합니다.',
+    Callback = function(Value)
+        getgenv().Config.TriggerDelay = Value
     end
 })
 
@@ -1349,7 +1468,171 @@ VisualsGroup:AddToggle('ShowSkeleton', {
     Callback = function(v) TogglesRef.ESPSkeleton = v end
 })
 
--- Visuals 탭에 기기(플랫폼) 변경 및 닉네임 변경 그룹 추가
+-- Visuals 탭에 새로 추가된 FOV 색상 및 테두리 설정 그룹박스
+local FOVColorGroup = Tabs.Visuals:AddLeftGroupbox('Visual FOV & Custom Colors')
+
+FOVColorGroup:AddToggle('ShowVisualFOVCircle', {
+    Text = 'Enable Visual FOV Circle',
+    Default = true,
+    Tooltip = '시각적 FOV 원을 표시하거나 숨깁니다.',
+    Callback = function(Value)
+        getgenv().Config.ShowFOV = Value
+    end
+})
+
+FOVColorGroup:AddDropdown('ColorLoopModeSelect', {
+    Values = { 'Fixed', 'Loop3' },
+    Default = 1,
+    Multi = false,
+    Text = 'Border Color Mode',
+    Tooltip = '테두리 색상을 고정(Fixed)하거나 3가지 색상 순환(Loop3)으로 설정합니다.',
+    Callback = function(Value)
+        getgenv().Config.ColorLoopMode = Value
+    end
+})
+
+-- 테두리 색상 3가지 설정용 컬러 피커 추가
+FOVColorGroup:AddLabel('Border Color 1'):AddColorPicker('FOVColor1Picker', {
+    Default = Color3.fromRGB(255, 255, 255),
+    Title = '테두리 색상 1',
+    Callback = function(Value)
+        getgenv().Config.FOVColor1 = Value
+    end
+})
+
+FOVColorGroup:AddLabel('Border Color 2'):AddColorPicker('FOVColor2Picker', {
+    Default = Color3.fromRGB(255, 0, 0),
+    Title = '테두리 색상 2',
+    Callback = function(Value)
+        getgenv().Config.FOVColor2 = Value
+    end
+})
+
+FOVColorGroup:AddLabel('Border Color 3'):AddColorPicker('FOVColor3Picker', {
+    Default = Color3.fromRGB(0, 255, 0),
+    Title = '테두리 색상 3',
+    Callback = function(Value)
+        getgenv().Config.FOVColor3 = Value
+    end
+})
+
+-- 원 안의 채우기 토글 및 색상 지정 컬러 피커 추가
+FOVColorGroup:AddToggle('FOVInnerFilledToggle', {
+    Text = 'Enable Inner Circle Fill',
+    Default = false,
+    Tooltip = 'FOV 원 내부를 색상으로 채웁니다.',
+    Callback = function(Value)
+        getgenv().Config.FOVInnerFilled = Value
+        phem4.Filled = Value
+    end
+})
+
+FOVColorGroup:AddLabel('Inner Fill Color'):AddColorPicker('FOVInnerColorPicker', {
+    Default = Color3.fromRGB(0, 0, 0),
+    Title = '원 안의 색상',
+    Callback = function(Value)
+        getgenv().Config.FOVInnerColor = Value
+        phem4.Color = Value -- 필요에 따라 내부 색상 적용
+    end
+})
+
+FOVColorGroup:AddSlider('VisualFOVRadiusSlider', {
+    Text = 'Visual FOV Radius',
+    Default = 300,
+    Min = 50,
+    Max = 800,
+    Rounding = 0,
+    Callback = function(Value)
+        getgenv().Config.FOVRadius = Value
+    end
+})
+
+local LightingGroup = Tabs.Visuals:AddLeftGroupbox('Lighting & Atmosphere')
+LightingGroup:AddToggle('FullbrightToggle', {
+    Text = 'Fullbright',
+    Default = false,
+    Tooltip = '화면을 밝게 유지합니다.',
+    Callback = function(Value)
+        getgenv().WorldConfig.Fullbright = Value
+    end
+})
+LightingGroup:AddToggle('RemoveFogToggle', {
+    Text = 'Remove Fog',
+    Default = false,
+    Tooltip = '안개 및 대기 효과를 제거합니다.',
+    Callback = function(Value)
+        getgenv().WorldConfig.RemoveFog = Value
+    end
+})
+LightingGroup:AddDropdown('ColorTintSelect', {
+    Values = { 'None', 'Red', 'Blue' },
+    Default = 1,
+    Multi = false,
+    Text = 'Screen Tint Color (Bright)',
+    Tooltip = '화면을 빨간색 또는 파란색 계열로 밝고 화사하게 물들입니다.',
+    Callback = function(Value)
+        getgenv().WorldConfig.ColorTint = Value
+    end
+})
+
+local WeatherSkyGroup = Tabs.Visuals:AddLeftGroupbox('Skybox & Weather')
+WeatherSkyGroup:AddToggle('NoShadowsToggle', {
+    Text = 'Disable Shadows',
+    Default = false,
+    Tooltip = '그림자를 비활성화합니다.',
+    Callback = function(Value)
+        getgenv().WorldConfig.NoShadows = Value
+    end
+})
+WeatherSkyGroup:AddDropdown('WeatherSelectVisuals', {
+    Values = { 'None', 'Snow', 'Rain' },
+    Default = 1,
+    Multi = false,
+    Text = 'Select Weather',
+    Tooltip = '시각적 날씨 효과(눈, 비)를 선택합니다.',
+    Callback = function(Value)
+        applyWeather(Value)
+    end
+})
+
+local SpooferVisualsGroup = Tabs.Visuals:AddRightGroupbox('Profile & Stat Spoofers')
+SpooferVisualsGroup:AddToggle('LevelSpoof', {
+    Text = 'Level Spoofer',
+    Default = false,
+    Tooltip = '레벨 수치를 가상으로 변조합니다.',
+    Callback = function(Value)
+        getgenv().SpooferConfig.LevelSpoof = Value
+    end
+})
+SpooferVisualsGroup:AddSlider('LevelValue', {
+    Text = 'Fake Level',
+    Default = 999,
+    Min = 1,
+    Max = 9999,
+    Rounding = 0,
+    Callback = function(Value)
+        getgenv().SpooferConfig.LevelValue = Value
+    end
+})
+SpooferVisualsGroup:AddToggle('StreakSpoof', {
+    Text = 'Win Streak Spoofer',
+    Default = false,
+    Tooltip = '연승 수치를 가상으로 변조합니다.',
+    Callback = function(Value)
+        getgenv().SpooferConfig.StreakSpoof = Value
+    end
+})
+SpooferVisualsGroup:AddSlider('StreakValue', {
+    Text = 'Fake Streak',
+    Default = 100,
+    Min = 1,
+    Max = 1000,
+    Rounding = 0,
+    Callback = function(Value)
+        getgenv().SpooferConfig.StreakValue = Value
+    end
+})
+
 local PlatformGroup = Tabs.Visuals:AddRightGroupbox('Device & Name Changer')
 
 PlatformGroup:AddDropdown('PlatformSelect', {
@@ -1433,7 +1716,6 @@ ThirdPersonGroup:AddSlider('ThirdPersonDistanceSlider', {
     end
 })
 
--- World 탭 및 날씨 설정 그룹 추가
 local WeatherGroup = Tabs.World:AddLeftGroupbox('Weather Controls')
 
 WeatherGroup:AddDropdown('WeatherSelect', {
@@ -1466,6 +1748,37 @@ task.spawn(function()
         pcall(_updateESP)
         runS.Heartbeat:Wait()
     end
+end)
+
+runS.Heartbeat:Connect(function()
+    if not getgenv().Config.TriggerbotEnabled then return end
+    local mouse = lplr:GetMouse()
+    local target = mouse.Target
+    if target and target.Parent then
+        local character = target.Parent
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Health > 0 then
+            local player = plrs:GetPlayerFromCharacter(character)
+            if player and player ~= lplr then
+                task.wait(getgenv().Config.TriggerDelay / 1000)
+                mouse1press()
+                task.wait(0.05)
+                mouse1release()
+            end
+        end
+    end
+end)
+
+runS.RenderStepped:Connect(function()
+    if not getgenv().Config.Ragebot2Enabled then return end
+    local myChar = lplr.Character
+    if not myChar or not myChar:FindFirstChild("HumanoidRootPart") then return end
+    pcall(function()
+        local tool = myChar:FindFirstChildOfClass("Tool")
+        if tool then
+            tool:Activate()
+        end
+    end)
 end)
 
 local lastFire = 0
@@ -1548,4 +1861,4 @@ runS.Heartbeat:Connect(function()
     )
 end)
 
-print("빨딱V1 free버전")
+print("빨딱V1 free버전 (FOV 커스텀 색상 및 3가지 테두리 색상 설정 완료)")
