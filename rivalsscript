@@ -1,3 +1,617 @@
+--[[
+    빨딱V1 free버전 (LPH 에러 패치 버전)
+]]
+
+if not LPH_NO_VIRTUALIZE then
+    getgenv().LPH_NO_VIRTUALIZE = function(f) return f end
+end
+
+-- 안티치트 바이패스 코드 적용
+pcall(LPH_NO_VIRTUALIZE(function()
+    local bypassed = false
+
+    local kKickNames = {
+        "Kick",
+        "kick"
+    }
+
+    local kProtectedProperties = {
+        Enabled = true,
+        Disabled = false
+    }
+
+    local kSlotMap = {
+        [69]  = 2,
+        [138] = 3,
+        [207] = 4,
+        [276] = 5,
+        [345] = 6,
+        [414] = 7,
+    }
+
+    local kFilledSub = {
+        1,
+        2,
+        3,
+        4,
+        5
+    }
+
+    local Players = cloneref(game:GetService("Players"))
+    local ReplicatedFirst = cloneref(game:GetService("ReplicatedFirst"))
+    local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+    local ScriptContext = cloneref(game:GetService("ScriptContext"))
+
+    local LocalPlayer = Players.LocalPlayer
+
+    local ac_script = ReplicatedFirst:WaitForChild("LocalScript3")
+    local ac_event = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RemoteEvent")
+
+    local last = nil
+    local first_seen = false
+    local hijack_ready = false
+    local client_id
+    local expected_interval = 0.6
+    local min_interval = 0.25
+    local ema_alpha = 0.5
+    local samples = 0
+    local hidden_fn = {}
+    local max_stack_depth = 128
+    if not setstackhidden then
+        local function ValidTraceback(s)
+            local dotPos = string.find(s, "%.")
+            local colonPos = string.find(s, ":")
+
+            if not dotPos then
+                return false
+            end
+
+            if not colonPos then
+                return true
+            end
+
+            return dotPos < colonPos
+        end
+
+        local function TracebackLines(str, lvl)
+            local pos = lvl
+            return function()
+                if not pos then
+                    return nil
+                end
+                local p1, p2 = string.find(str, "\r?\n", pos)
+                local line
+                if p1 then
+                    line = str:sub(pos, p1 - 1)
+                    pos = p2 + 1
+                else
+                    line = str:sub(pos)
+                    pos = nil
+                end
+                return line
+            end
+        end
+
+        local old_dbg_traceback;
+        old_dbg_traceback = hookfunction(getrenv().debug.traceback, function(...)
+            if checkcaller() or not (pcall(old_dbg_traceback, ...)) then
+                return old_dbg_traceback(...)
+            end
+
+            local StartingString, StackLevel = ...
+            local Traceback = old_dbg_traceback(...)
+            local NewTraceback = {}
+
+            if typeof(StartingString) == "string" or typeof(StartingString) == "number" then
+                table.insert(NewTraceback, tostring(StartingString))
+            end
+
+            if typeof(StackLevel) ~= "number" or not tonumber(StackLevel) then
+                StackLevel = 1
+            else
+                StackLevel = math.floor(tonumber(StackLevel))
+            end
+
+            for Line in TracebackLines(Traceback, StackLevel) do
+                if not ValidTraceback(Line) then
+                    continue
+                end
+
+                table.insert(NewTraceback, Line)
+            end
+
+            return table.concat(NewTraceback, "\n") .. "\n"
+        end)
+
+        local old_dbg_info;
+        old_dbg_info = hookfunction(getrenv().debug.info, function(...)
+            local ToInspect, LevelOrInfo, _ThreadInfo = ...
+
+            if
+                checkcaller()
+                or typeof(ToInspect) == "function"
+                or typeof(ToInspect) == "thread"
+                or not pcall(function(LevelOrInfo)
+                    old_dbg_info(function() end, LevelOrInfo)
+                end, LevelOrInfo)
+            then
+                return old_dbg_info(...)
+            end
+
+            ToInspect = math.floor(ToInspect)
+
+            local ReconstructedConstructedStack = {}
+            for Level = 2, max_stack_depth do
+                local Function, Source, Line, Name, NumberOfArgs, Varargs = old_dbg_info(Level, "fslna")
+
+                if not Function or not Source or not Line or not Name then
+                    break
+                end
+
+                if isexecutorclosure(Function) and not hidden_fn[Function] then
+                    continue
+                end
+
+                table.insert(ReconstructedConstructedStack, {
+                    f = Function,
+                    s = Source,
+                    l = Line,
+                    n = Name,
+                    a = { NumberOfArgs, Varargs },
+                })
+            end
+
+            local InfoLevel = ReconstructedConstructedStack[ToInspect + 1]
+
+            if not InfoLevel then
+                return old_dbg_info(3e4, LevelOrInfo)
+            end
+
+            local ReturnResult = {}
+            for idx, info in string.split(LevelOrInfo, "") do
+                local Value = InfoLevel[info]
+
+                if typeof(Value) == "table" then
+                    for _, v in Value do
+                        table.insert(ReturnResult, v)
+                    end
+
+                    continue
+                end
+
+                table.insert(ReturnResult, Value)
+            end
+
+            return table.unpack(ReturnResult, 1, #ReturnResult)
+        end)
+
+        local old_getfenv;
+        old_getfenv = hookfunction(getrenv().getfenv, function(...)
+            if checkcaller() then
+                return old_getfenv(...)
+            end
+
+            local ToInspect: (...any) -> (...any) | number = ...
+
+            local Success, ResultingEnv = pcall(function()
+                if typeof(ToInspect) == "number" and ToInspect >= 0 then
+                    return old_getfenv(ToInspect + 3)
+                end
+
+                return old_getfenv(ToInspect)
+            end)
+
+            if not Success then
+                if typeof(ToInspect) == "number" and ToInspect >= 0 then
+                    return old_getfenv(ToInspect + 3)
+                end
+
+                return old_getfenv(ToInspect)
+            end
+
+            if ToInspect == nil or typeof(ToInspect) == "function" then
+                return ResultingEnv
+            end
+
+            ToInspect = math.floor(ToInspect)
+
+            local ReconstructedConstructedStack = {}
+            for Level = 1, max_stack_depth do
+                local StackInfoSuccess, Data = pcall(function()
+                    return {
+                        Environement = old_getfenv(Level + 3),
+                        Function = old_dbg_info(Level + 3, "f"),
+                    }
+                end)
+
+                if not StackInfoSuccess or not Data then
+                    break
+                end
+
+                local Environement = Data.Environement
+                local Function = Data.Function
+
+                if typeof(Environement["getgenv"]) == "function" and isexecutorclosure(Environement["getgenv"]) then
+                    if shared.Hooking.IncludeInStackFunctions[Function] then
+                        Environement = setmetatable(ResultingEnv, {
+                            __index = getrenv()
+                        })
+                    else
+                        continue
+                    end
+                end
+
+                table.insert(ReconstructedConstructedStack, Environement)
+            end
+
+            local InfoLevel = ReconstructedConstructedStack[ToInspect + 1]
+
+            if not InfoLevel then
+                return old_getfenv(3e4)
+            end
+
+            return InfoLevel
+        end)
+    end
+
+    setstackhidden = setstackhidden or function(fn_or_level, hidden)
+        assert(typeof(hidden) == "boolean", "hidden must be boolean")
+
+        local ok, fn = pcall(function()
+            if typeof(fn_or_level) == "number" then
+                return debug.info(fn_or_level + 2, "f")
+            end
+            return fn_or_level
+        end)
+
+        assert(ok and fn, "invalid argument #1 to 'setstackhidden'")
+        hidden_fn[fn] = not hidden
+    end
+
+    local TrustedFunctions = setmetatable({}, {
+        __mode = "k"
+    })
+
+    local function TrustFunction(fn)
+        if type(fn) == "function" then
+            TrustedFunctions[fn] = true
+        end
+
+        return fn
+    end
+
+    local function IsTrustedFunction(fn)
+        return TrustedFunctions[fn] == true
+    end
+
+    local SafeHook = function(hookfn, ...)
+        local args = {...}
+        local func, inst, metamethod, detour
+
+        if hookfn == hookmetamethod then
+            inst = args[1]
+            metamethod = args[2]
+            detour = args[3]
+        else
+            func = args[1]
+            detour = args[2]
+        end
+
+        local original_func
+
+        if hookfn == hookfunction and iscclosure(func) then
+            detour = newcclosure(detour)
+        end
+
+        if not iscclosure(detour) then
+            detour = newcclosure(detour)
+        end
+
+        setstackhidden(detour, true)
+
+        local ok, _ = pcall(function()
+            TrustFunction(detour)
+                    
+            if hookfn == hookmetamethod then
+                original_func = hookfn(inst, metamethod, detour)
+            else
+                original_func = hookfn(func, detour)
+            end
+        end)
+
+        if not ok or not original_func then
+            -- nil 반환이나 실패 시 대체 처리 또는 무시하도록 예외 처리 보강
+            original_func = function(...)
+                if hookfn == hookmetamethod then
+                    return 
+                end
+                return func(...)
+            end
+        end
+
+        return original_func
+    end
+
+    local SafeCall = function(func, ...)
+        if checkcaller() then
+            return func(...)
+        end
+
+        local old = getthreadidentity()
+        if old ~= 2 then
+            setthreadidentity(2)
+        end
+
+        local result = {func(...)}
+
+        if old ~= 2 then
+            setthreadidentity(old)
+        end
+
+        return table.unpack(result)
+    end
+
+    local monitor_conn = ScriptContext.Error:Connect(TrustFunction(function(message, stack, _)
+        message = tostring(message)
+        stack = tostring(stack)
+        if stack:find("PlayerScripts.Controllers.MiscellaneousController") and message:find("attempt to index number with number") then
+            LocalPlayer:Kick("[AethSec]: Bypass failed! n2")
+        end
+    end))
+
+    local oldindex; oldindex = SafeHook(hookmetamethod, game, "__index", function(t, k)
+        local is_caller = not bypassed and checkcaller()
+        if t == ac_script and not is_caller and kProtectedProperties[k] ~= nil then
+            return kProtectedProperties[k]
+        end
+        if checkcaller() then
+            if type(oldindex) == "function" then return oldindex(t, k) end
+            return nil
+        end
+        if type(oldindex) == "function" then return SafeCall(oldindex, t, k) end
+        return nil
+    end)
+
+    local oldnewindex; oldnewindex = SafeHook(hookmetamethod, game, "__newindex", function(t, k, v)
+        local is_caller = not bypassed and checkcaller()
+        if t == ac_script and not is_caller and kProtectedProperties[k] ~= nil then
+            kProtectedProperties[k] = v
+            if k == "Enabled" then
+                kProtectedProperties["Disabled"] = not v
+            end
+
+            if k == "Disabled" then
+                kProtectedProperties["Enabled"] = not v
+            end
+            return
+        end
+        if checkcaller() then
+            if type(oldnewindex) == "function" then return oldnewindex(t, k, v) end
+            return
+        end
+        if type(oldnewindex) == "function" then return SafeCall(oldnewindex, t, k, v) end
+    end)
+
+    client_id = ""
+    last = tick()
+
+    local oldfireserver; oldfireserver = SafeHook(hookfunction, ac_event.FireServer, function(self, ...)
+        local now = tick()
+        local args = {...}
+
+        if not first_seen then
+            first_seen = true
+            local first_arg = args[1]
+
+            if type(first_arg) == "table" and #first_arg >= 1 and (type(first_arg[1]) == "string" or type(first_arg[1]) == "number") then
+                client_id = tostring(first_arg[1])
+            else
+                client_id = client_id or ""
+            end
+
+            last = tick()
+            samples = 1
+            hijack_ready = true
+
+            local res = SafeCall(oldfireserver, self, ...)
+            return res
+        end
+
+        local interval = now - (last or now)
+
+        if interval > 0 then
+            if samples == 0 then
+                expected_interval = interval
+            else
+                expected_interval = ema_alpha * interval + (1 - ema_alpha) * expected_interval
+            end
+
+            samples = samples + 1
+
+            if expected_interval < min_interval then
+                expected_interval = min_interval
+            end
+        end
+
+        local res = SafeCall(oldfireserver, self, ...)
+        last = tick()
+
+        return res
+    end)
+
+    local BuildSubTable = function()
+        local num_empty = math.random(1, 5)
+        local empty_map = {}
+        local empty_slots = {7}
+        empty_map[7] = true
+
+        while #empty_slots < num_empty do
+            local slot = math.random(1, 6)
+            if not empty_map[slot] then
+                empty_map[slot] = true
+                table.insert(empty_slots, slot)
+            end
+        end
+
+        table.sort(empty_slots)
+
+        local result = {}
+        for i = 1, 7 do
+            if empty_map[i] then
+                result[i] = {}
+            else
+                result[i] = kFilledSub
+            end
+        end
+
+        return result, empty_slots
+    end
+
+    local ApplyTransforms = function(t, mask, empty_slots)
+        local payload = t[1]
+        local outer_index = #payload
+        local inner_index = empty_slots[math.random(1, #empty_slots)]
+        local derived
+        local outer_val = payload[outer_index]
+
+        if type(outer_val) == "table" and type(inner_index) == "number" then
+            derived = outer_val[inner_index]
+        else
+            for i = outer_index, 1, -1 do
+                if type(payload[i]) ~= "table" then
+                    continue
+                end
+
+                local candidate = payload[i]
+
+                if type(inner_index) == "number" and candidate[inner_index] ~= nil then
+                    derived = candidate[inner_index]
+                    break
+                else
+                    derived = candidate
+                    break
+                end
+            end
+
+            if derived == nil then
+                derived = {}
+            end
+        end
+
+        local written = {}
+        local kSlotMapRef = kSlotMap
+
+        for _, value in ipairs(mask) do
+            local slot = kSlotMapRef[value]
+            if slot and not written[slot] then
+                t[slot] = derived
+                written[slot] = true
+            end
+        end
+
+        return t
+    end
+
+    local BuildPayload = function(challenge, mask)
+        local sub_table, empty_slots = BuildSubTable()
+        local total_idx = math.random(1, 8)
+        local payload = {client_id, buffer.tostring(challenge)}
+        local extra_strings = math.random(0, 2)
+
+        for _ = 1, extra_strings do
+            payload[#payload + 1] = ""
+        end
+
+        while #payload < (total_idx - 1) do
+            payload[#payload + 1] = math.random(5, 100000)
+        end
+
+        payload[#payload + 1] = sub_table
+
+        local t = {
+            payload,
+            {},
+            nil,
+            nil,
+            nil,
+            nil,
+            nil
+        }
+        return ApplyTransforms(t, mask, empty_slots)
+    end
+
+    task.spawn(function()
+        getfenv().script = ac_script
+        while not hijack_ready do
+            task.wait()
+        end
+
+        ac_script.Enabled = false
+
+        ac_event.OnClientEvent:Connect(function(...)
+            last = tick()
+
+            local remote = Instance.new("RemoteEvent", nil)
+            remote:FireServer()
+
+            local t = {...}
+            local challenge = t[1]
+            local index = t[2]
+            local mask = t[3]
+
+            if typeof(challenge) ~= "buffer" or type(index) ~= "number" or type(mask) ~= "table" then
+                LocalPlayer:Kick("[AethSec]: Bypass failed! n3")
+            end
+
+            local payload = BuildPayload(challenge, mask)
+            task.defer(function()
+                local since_last = tick() - (last or 0)
+                local desired_wait = expected_interval - since_last
+                
+                if desired_wait > 0 then
+                    task.wait(desired_wait)
+                end
+                ac_event:FireServer(table.unpack(payload, 1, 5))
+                last = tick()
+                remote:Destroy()
+            end)
+        end)
+            
+        bypassed = true
+        monitor_conn:Disconnect()
+    end)
+
+    for _, name in ipairs(kKickNames) do
+        local func = LocalPlayer[name]
+        if type(func) ~= "function" then return end
+            
+        local oldfunc; oldfunc = SafeHook(hookfunction, func, function(self, ...)
+            if self == LocalPlayer and not checkcaller() then
+                return nil
+            end
+            return oldfunc(self, ...)
+        end)
+    end
+
+    for _, conn in ipairs(getconnections(ScriptContext.Error)) do
+        if not conn.Function then continue end
+        if IsTrustedFunction(conn.Function) then continue end
+        SafeHook(hookfunction, conn.Function, function(...)
+            return nil
+        end)
+    end
+
+    SafeHook(hookfunction, ScriptContext.Error.Connect, function(...)
+        return nil
+    end)
+
+    while not bypassed do
+        task.wait(0.5)
+    end
+    task.wait(1)
+end))
+
+-- 기존 메인 UI 및 기능 스크립트[cite: 9]
 local repS = cloneref(game:GetService("ReplicatedStorage"))
 local plrs = cloneref(game:GetService("Players"))
 local runS = cloneref(game:GetService("RunService"))
@@ -14,37 +628,32 @@ local enum = require(repS:WaitForChild("Modules"):WaitForChild("EnumLibrary"))
 local FighterController = require(lplr.PlayerScripts.Controllers:WaitForChild("FighterController"))
 local SpectateController = require(lplr.PlayerScripts.Controllers:WaitForChild("SpectateController"))
 
--- 이동 및 비행/노클립 설정 설정
 getgenv().MovementConfig = {
     FlyEnabled = false,
     FlySpeed = 50,
     NoclipEnabled = false,
-    WalkSpeed = 1, -- 1이 기본
-    SlideSpeed = 1 -- 1이 기본
+    WalkSpeed = 1,
+    SlideSpeed = 1
 }
 
--- 플레이어 플랫폼(기기) 아이콘 가상 변경 설정
 getgenv().PlatformConfig = {
-    Type = "Computer" -- Computer, Console, VR, Mobile 중 선택 가능
+    Type = "Computer"
 }
 
--- 로컬 닉네임 변조 설정 (나한테만 보임)
 getgenv().NameConfig = {
     Enabled = false,
     Display = "CustomDisplayName",
     Real = "CustomUsername"
 }
 
--- 월드(조명/대기/날씨) 및 스푸퍼 설정
 getgenv().WorldConfig = {
     Fullbright = false,
     RemoveFog = false,
     NoShadows = false,
     Weather = "None",
-    ColorTint = "None" -- "None", "Red", "Blue"
+    ColorTint = "None"
 }
 
--- 화면 색상 필터용 객체 생성
 local colorCorrection = lighting:FindFirstChild("CustomColorCorrection")
 if not colorCorrection then
     colorCorrection = Instance.new("ColorCorrectionEffect")
@@ -74,7 +683,7 @@ local function applyWeather(weatherType)
     if weatherType == "Snow" then
         local emitter = Instance.new("ParticleEmitter")
         emitter.Name = "SnowEmitter"
-        emitter.Texture = "rbxassetid://606917390" -- 눈송이 텍스처
+        emitter.Texture = "rbxassetid://606917390"
         emitter.Rate = 200
         emitter.Speed = NumberRange.new(5, 10)
         emitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 0.5)})
@@ -139,7 +748,6 @@ local function applyWeather(weatherType)
     end
 end
 
--- Fly 및 Noclip 구현
 runS.Stepped:Connect(function()
     local char = lplr.Character
     if not char then return end
@@ -173,7 +781,6 @@ runS.Stepped:Connect(function()
     end
 end)
 
--- 라이팅 및 컬러 틴트(빨강/파랑) 처리 루프
 runS.RenderStepped:Connect(function()
     if getgenv().WorldConfig.Fullbright then
         lighting.Brightness = 2
@@ -186,7 +793,6 @@ runS.RenderStepped:Connect(function()
         end
     end
 
-    -- 빨간색/파란색 화면 밝기 및 색조 적용
     local tint = getgenv().WorldConfig.ColorTint
     if tint == "Red" then
         colorCorrection.TintColor = Color3.fromRGB(255, 180, 180)
@@ -202,7 +808,6 @@ runS.RenderStepped:Connect(function()
     end
 end)
 
--- 프로필 및 스탯 스푸퍼 처리 루프
 runS.Heartbeat:Connect(function()
     if getgenv().SpooferConfig.LevelSpoof then
         lplr:SetAttribute("Level", getgenv().SpooferConfig.LevelValue)
@@ -212,7 +817,6 @@ runS.Heartbeat:Connect(function()
     end
 end)
 
--- 플랫폼(기기) 정보 조작 훅
 pcall(function()
     local oldIndex
     oldIndex = hookmetamethod(game, "__index", function(self, k)
@@ -228,7 +832,10 @@ pcall(function()
                 return Enum.Platform.Computer
             end
         end
-        return oldIndex(self, k)
+        if type(oldIndex) == "function" then
+            return oldIndex(self, k)
+        end
+        return nil
     end)
 
     local oldGetPlatform
@@ -246,11 +853,13 @@ pcall(function()
                 return Enum.Platform.Computer
             end
         end
-        return oldGetPlatform(self, ...)
+        if type(oldGetPlatform) == "function" then
+            return oldGetPlatform(self, ...)
+        end
+        return nil
     end)
 end)
 
--- 로컬 닉네임/디스플레이 닉네임 변조 훅
 pcall(function()
     local oldIndexName
     oldIndexName = hookmetamethod(game, "__index", function(self, k)
@@ -261,7 +870,10 @@ pcall(function()
                 return getgenv().NameConfig.Real
             end
         end
-        return oldIndexName(self, k)
+        if type(oldIndexName) == "function" then
+            return oldIndexName(self, k)
+        end
+        return nil
     end)
 end)
 
@@ -418,31 +1030,6 @@ _stbl = hookfunction(getrenv().setmetatable, newcclosure(function(tbl, mt)
     return _stbl(tbl, mt)
 end))
 
-coroutine.wrap(function()
-    pcall(function()
-        local function _proc(o)
-            pcall(function()
-                if o:IsA("LocalScript") or o:IsA("ModuleScript") then
-                    local _s, nm = pcall(function() return o.Name:lower() end)
-                    if not _s or not nm then return end
-                    local _tags = {"anticheat", "ac", "detection", "ban", "kick", "security", "moderation"}
-                    for _i = 1, #_tags do
-                        if nm:find(_tags[_i]) then
-                            pcall(function() o.Disabled = true end)
-                            break
-                        end
-                    end
-                end
-            end)
-        end
-        pcall(function()
-            local _desc = game:GetDescendants()
-            for _i = 1, #_desc do _proc(_desc[_i]) end
-        end)
-        pcall(function() game.DescendantAdded:Connect(_proc) end)
-    end)
-end)()
-
 getgenv().Config = {
     Enabled = false,
     TriggerbotEnabled = false,
@@ -456,13 +1043,12 @@ getgenv().Config = {
     HitPart = "Head",
     FOVRadius = 300,
     ShowFOV = true,
-    -- FOV 색상 설정용 변수 추가
     FOVColor1 = Color3.fromRGB(255, 255, 255),
     FOVColor2 = Color3.fromRGB(255, 0, 0),
     FOVColor3 = Color3.fromRGB(0, 255, 0),
     FOVInnerColor = Color3.fromRGB(0, 0, 0),
     FOVInnerFilled = false,
-    ColorLoopMode = "Fixed" -- "Fixed" 또는 순환용
+    ColorLoopMode = "Fixed"
 }
 
 local slots = {
@@ -489,7 +1075,6 @@ phem4.Color = Color3.fromRGB(255, 255, 255)
 phem4.Thickness = 1
 phem4.Filled = false
 
--- FOV 3가지 테두리 색상 루프용 변수
 local colorLoopTimer = 0
 
 runS.RenderStepped:Connect(function()
@@ -499,7 +1084,6 @@ runS.RenderStepped:Connect(function()
     phem4.Radius = getgenv().Config.FOVRadius
     phem4.Visible = getgenv().Config.ShowFOV and getgenv().Config.SilentAimEnabled
 
-    -- 테두리 색상 3가지 순환 또는 지정 적용
     colorLoopTimer = (colorLoopTimer + tick()) % 3
     if getgenv().Config.ColorLoopMode == "Loop3" then
         local step = math.floor(tick() * 2) % 3
@@ -514,7 +1098,6 @@ runS.RenderStepped:Connect(function()
         phem4.Color = getgenv().Config.FOVColor1
     end
 
-    -- 원 안의 색상 및 채우기 적용
     phem4.Filled = getgenv().Config.FOVInnerFilled
     phem4.Transparency = getgenv().Config.FOVInnerFilled and 0.5 or 1
 end)
@@ -874,7 +1457,10 @@ task.spawn(function()
                 local _onc
                 _onc = hookmetamethod(game, "__namecall", function(self, ...)
                     if getnamecallmethod() ~= "FireServer" then
-                        return _onc(self, ...)
+                        if type(_onc) == "function" then
+                            return _onc(self, ...)
+                        end
+                        return
                     end
                     local _a = {...}
 
@@ -903,7 +1489,10 @@ task.spawn(function()
                         if _cn and _cn ~= "None" and _cn ~= "" then
                             local _inv = _datCtrl:Get("CosmeticInventory")
                             if _inv and rawget(_inv, _cn) then
-                                return _onc(self, ...)
+                                if type(_onc) == "function" then
+                                    return _onc(self, ...)
+                                end
+                                return
                             end
                         end
                         _eq[_wn] = _eq[_wn] or {}
@@ -937,7 +1526,9 @@ task.spawn(function()
                         return
                     end
 
-                    return _onc(self, ...)
+                    if type(_onc) == "function" then
+                        return _onc(self, ...)
+                    end
                 end)
             end
         end
@@ -1468,7 +2059,6 @@ VisualsGroup:AddToggle('ShowSkeleton', {
     Callback = function(v) TogglesRef.ESPSkeleton = v end
 })
 
--- Visuals 탭에 새로 추가된 FOV 색상 및 테두리 설정 그룹박스
 local FOVColorGroup = Tabs.Visuals:AddLeftGroupbox('Visual FOV & Custom Colors')
 
 FOVColorGroup:AddToggle('ShowVisualFOVCircle', {
@@ -1491,7 +2081,6 @@ FOVColorGroup:AddDropdown('ColorLoopModeSelect', {
     end
 })
 
--- 테두리 색상 3가지 설정용 컬러 피커 추가
 FOVColorGroup:AddLabel('Border Color 1'):AddColorPicker('FOVColor1Picker', {
     Default = Color3.fromRGB(255, 255, 255),
     Title = '테두리 색상 1',
@@ -1516,7 +2105,6 @@ FOVColorGroup:AddLabel('Border Color 3'):AddColorPicker('FOVColor3Picker', {
     end
 })
 
--- 원 안의 채우기 토글 및 색상 지정 컬러 피커 추가
 FOVColorGroup:AddToggle('FOVInnerFilledToggle', {
     Text = 'Enable Inner Circle Fill',
     Default = false,
@@ -1532,7 +2120,7 @@ FOVColorGroup:AddLabel('Inner Fill Color'):AddColorPicker('FOVInnerColorPicker',
     Title = '원 안의 색상',
     Callback = function(Value)
         getgenv().Config.FOVInnerColor = Value
-        phem4.Color = Value -- 필요에 따라 내부 색상 적용
+        phem4.Color = Value
     end
 })
 
@@ -1861,4 +2449,4 @@ runS.Heartbeat:Connect(function()
     )
 end)
 
-print("빨딱V1 free버전 (FOV 커스텀 색상 및 3가지 테두리 색상 설정 완료)")
+print("빨딱V1 free버전 - 닐 에러 수정 완료")
