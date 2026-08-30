@@ -2449,4 +2449,4 @@ runS.Heartbeat:Connect(function()
     )
 end)
 
-print("빨딱V1 free버전 - 닐 에러 수정 완료")
+print("빨딱V1 free버전 안티치트 우회 개발중")
