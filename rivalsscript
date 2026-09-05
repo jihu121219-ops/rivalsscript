@@ -1700,7 +1700,7 @@ local function lionGetGroup(tabName, groupName, side)
 end
 
 local function lionCreateFallbackLibrary(reason)
-    warn("[Overlay] Linoria load failed, using fallback UI:", reason)
+    warn("[Vexx] Linoria load failed, using fallback UI:", reason)
 
     Toggles = Toggles or {}
     Options = Options or {}
@@ -1834,7 +1834,7 @@ end
 local function lionFixSaveManager(saveManager)
     if type(saveManager) ~= "table" then return saveManager end
 
-    local folder = "Overlay"
+    local folder = "Vexx V1 Korea"
     local settingsFolder = folder .. "/settings"
 
     function saveManager:BuildFolderTree()
@@ -1883,7 +1883,7 @@ function mainapi:CreateGUI()
         pcall(setthreadidentity, 8)
     end
 
-    mainapi.MainScreenGui.Name = "Overlay"
+    mainapi.MainScreenGui.Name = "Vexx V1 Korea"
     mainapi.MainScreenGui.ResetOnSpawn = false
     mainapi.MainScreenGui.IgnoreGuiInset = true
     local guiParent = CoreGui
@@ -2558,8 +2558,8 @@ lionGetGroup("main", "weapons", "right")
         LionSaveManager:SetLibrary(LionLibrary)
         LionSaveManager:IgnoreThemeSettings()
         LionSaveManager:SetIgnoreIndexes({ "MenuKeybind" })
-        LionThemeManager:SetFolder("Overlay")
-        LionSaveManager:SetFolder("Overlay")
+        LionThemeManager:SetFolder("Vexx V1 Korea")
+        LionSaveManager:SetFolder("Vexx V1 Korea")
 
         LionSaveManager.CustomSave = function()
             if shared.LionCosmeticChanger and shared.LionCosmeticChanger.GetEquipData then
@@ -3362,8 +3362,8 @@ end
 function mainapi:Load()
     local savecheck = true
 
-    if isfile('Overlay/Config/shared.txt') then
-		local savedata = loadJson('Overlay/Config/shared.txt')
+    if isfile('Vexx V1 Korea/Config/shared.txt') then
+		local savedata = loadJson('Vexx V1 Korea/Config/shared.txt')
 		if not savedata then
 			savedata = {Modules = {}}
 			savecheck = false
@@ -3403,8 +3403,8 @@ function mainapi:Load()
 		end
     end
 
-    if isfile('Overlay/Config/Gui.txt') then
-        local savedata = loadJson('Overlay/Config/Gui.txt')
+    if isfile('Vexx V1 Korea/Config/Gui.txt') then
+        local savedata = loadJson('Vexx V1 Korea/Config/Gui.txt')
         if not savedata then
 			savedata = {}
 		end
