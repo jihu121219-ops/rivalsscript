@@ -2607,7 +2607,7 @@ lionGetGroup("main", "weapons", "right")
         LionThemeManager:ApplyToTab(LionTabs.settings)
     end)
     if not managerOk then
-        warn("[Overlay] config UI setup failed:", managerErr)
+        warn("[Vexx V1 Korea] config UI setup failed:", managerErr)
     end
     -- Keep Linoria configs manual; autoload can fire callbacks before all modules are ready.
 end
