@@ -7116,7 +7116,7 @@ function Watermark.init(trove)
 	icon(1, Icons.Logo)
 	-- khook.lua:248485-248488 -- runtime title passed into Menu.new and then
 	-- reused verbatim by the watermark chrome.
-	text(2, "KiciaHook | Rivals | Public Beta Build", "TextColor")
+	text(2, "Vexx V2 | Rivals | Public Beta Build", "TextColor")
 	text(3, "|", "Unselected")
 	icon(4, PERSON_ICON)
 	text(5, LocalPlayer and LocalPlayer.Name or "?", "TextColor")
@@ -11301,9 +11301,9 @@ end
 function ESP.installFonts()
 	local assetLoader = getcustomasset or getsynasset
 	if not (writefile and isfile and isfolder and makefolder and assetLoader) then return end
-	local root = "kiciahook/rivals_v3/fonts"
-	if not isfolder("kiciahook") then pcall(makefolder, "kiciahook") end
-	if not isfolder("kiciahook/rivals_v3") then pcall(makefolder, "kiciahook/rivals_v3") end
+	local root = "Vexx V2/rivals_v3/fonts"
+	if not isfolder("Vexx V2") then pcall(makefolder, "Vexx V2") end
+	if not isfolder("Vexx V2/rivals_v3") then pcall(makefolder, "Vexx V2/rivals_v3") end
 	if not isfolder(root) then pcall(makefolder, root) end
 	local specs = {
 		Minecraftia = { file = "Minecraftia-Regular.ttf", url = "https://github.com/kiciahook-org/v3-assets/raw/refs/heads/main/Minecraftia-Regular.ttf" },
